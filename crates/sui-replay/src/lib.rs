@@ -29,21 +29,26 @@ use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_protocol_config::Chain;
 use sui_types::digests::TransactionDigest;
 use tracing::{error, info};
+use crate::call_trace::CallTraceWithSource;
+use crate::types::ReplayEngineError;
 
 pub mod batch_replay;
+pub mod call_trace;
 pub mod config;
+mod converter;
 mod data_fetcher;
 mod displays;
 pub mod fuzz;
 pub mod fuzz_mutations;
-mod replay;
-#[cfg(test)]
-mod tests;
+pub mod replay;
 pub mod transaction_provider;
 pub mod types;
 
 static DEFAULT_SANDBOX_BASE_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sandbox_snapshots");
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Parser, Clone)]
 #[command(rename_all = "kebab-case")]
@@ -118,15 +123,15 @@ pub enum ReplayToolCommand {
         #[arg(long, short)]
         terminate_early: bool,
         #[arg(
-            long,
-            short,
-            default_value = "16",
-            help = "Number of tasks to run in parallel"
+        long,
+        short,
+        default_value = "16",
+        help = "Number of tasks to run in parallel"
         )]
         num_tasks: u64,
         #[arg(
-            long,
-            help = "If provided, dump the state of the execution to a file in the given directory. \
+        long,
+        help = "If provided, dump the state of the execution to a file in the given directory. \
             This will allow faster replay next time."
         )]
         persist_path: Option<PathBuf>,
@@ -195,6 +200,12 @@ pub enum ReplayToolCommand {
 
     #[command(name = "report")]
     Report,
+
+    #[command(name = "tt")]
+    TraceTransaction {
+        #[arg(long, short)]
+        tx_digest: String,
+    },
 }
 
 #[async_recursion]
@@ -237,6 +248,8 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 None,
+                false,
+                false,
             )
             .await?;
 
@@ -264,7 +277,7 @@ pub async fn execute_replay_command(
                 fail_over_on_err: false,
                 expensive_safety_check_config: Default::default(),
             };
-            let fuzzer = ReplayFuzzer::new(get_rpc_url(rpc_url, cfg_path, chain)?, config)
+            let fuzzer = ReplayFuzzer::new(rpc_url.expect("Url must be provided"), config)
                 .await
                 .unwrap();
             fuzzer.run(num_base_transactions).await.unwrap();
@@ -314,7 +327,7 @@ pub async fn execute_replay_command(
                 terminate_early,
                 persist_path,
             )
-            .await;
+                .await;
 
             // TODO: clean this up
             Some((0u64, 0u64))
@@ -361,15 +374,17 @@ pub async fn execute_replay_command(
 
             let tx_digest = TransactionDigest::from_str(&tx_digest)?;
             info!("Executing tx: {}", tx_digest);
-            let _sandbox_state = LocalExec::replay_with_network_config(
+            let sandbox_state = LocalExec::replay_with_network_config(
                 get_rpc_url(rpc_url, cfg_path, chain)?,
                 tx_digest,
                 safety,
                 use_authority,
-                executor_version,
-                protocol_version,
-                output_path,
-                parse_configs_versions(config_objects),
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
             )
             .await?;
 
@@ -391,10 +406,12 @@ pub async fn execute_replay_command(
                 tx_digest,
                 safety,
                 use_authority,
-                executor_version,
-                protocol_version,
+                None,
+                None,
                 None,
                 parse_configs_versions(config_objects),
+                false,
+                false,
             )
             .await?;
 
@@ -500,10 +517,10 @@ pub async fn execute_replay_command(
                 .await
                 .into_iter()
                 .for_each(|x| match x {
-                    Ok((succeeded, total, time)) => {
+                    Ok((suceeded, total, time)) => {
                         total_tx += total;
                         total_time_ms += time.as_millis() as u64;
-                        total_succeeded += succeeded;
+                        total_succeeded += suceeded;
                     }
                     Err(e) => {
                         error!("Task failed: {:?}", e);
@@ -546,7 +563,7 @@ pub async fn execute_replay_command(
                     max_tasks,
                 },
             )
-            .await;
+                .await;
             match status {
                 Ok(Some((succeeded, total))) => {
                     info!(
@@ -564,6 +581,30 @@ pub async fn execute_replay_command(
                     return Err(e);
                 }
             }
+        }
+        ReplayToolCommand::TraceTransaction { tx_digest } => {
+            let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+            info!("Tracing tx: {}", tx_digest);
+            let sandbox_state = LocalExec::replay_with_network_config(
+                get_rpc_url(rpc_url, cfg_path, chain)?,
+                tx_digest,
+                safety,
+                use_authority,
+                None,
+                None,
+                None,
+                None,
+                true,
+                true,
+            )
+            .await?;
+            match sandbox_state.trace_results {
+                Some(results) => println!("{}", serde_json::to_string_pretty(&results)?),
+                None => {
+                    println!("No trace results");
+                }
+            };
+            None
         }
     })
 }
@@ -604,4 +645,38 @@ fn parse_configs_versions(
             })
             .collect(),
     )
+}
+
+pub async fn init_for_tracer(
+    rpc_url: String,
+) -> Result<LocalExec, ReplayEngineError> {
+    LocalExec::init_for_tracer(rpc_url).await
+}
+
+pub async fn execute_call_trace(
+    local_exec: LocalExec,
+    tx_digest: String,
+    safety_checks: bool,
+    use_authority: bool,
+) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
+    let safety = if safety_checks {
+        ExpensiveSafetyCheckConfig::new_enable_all()
+    } else {
+        ExpensiveSafetyCheckConfig::default()
+    };
+    let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+    info!("Tracing tx: {}", tx_digest);
+    let sandbox_state = LocalExec::replay_with_network_config_for_trace(
+        local_exec,
+        tx_digest,
+        safety,
+        use_authority,
+        Some(-1),
+        None,
+        None,
+        None,
+        true,
+        true,
+    ).await?;
+    Ok(sandbox_state.trace_results)
 }

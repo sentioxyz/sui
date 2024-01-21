@@ -15,6 +15,7 @@ use move_binary_format::{
     errors::{verification_error, Location, PartialVMError, PartialVMResult, VMResult},
     file_format::{AbilitySet, LocalIndex},
     CompiledModule, IndexKind,
+    call_trace::CallTraces,
 };
 use move_bytecode_verifier::script_signature;
 use move_core_types::{
@@ -35,6 +36,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
+use move_binary_format::errors::VMError;
 use tracing::warn;
 
 /// An instantiation of the MoveVM.
@@ -104,7 +106,7 @@ impl VMRuntime {
                     IndexKind::AddressIdentifier,
                     module.self_handle_idx().0,
                 )
-                .finish(Location::Undefined));
+                    .finish(Location::Undefined));
             }
         }
 
@@ -496,7 +498,6 @@ impl VMRuntime {
         data_store: &mut impl DataStore,
         gas_meter: &mut impl GasMeter,
         extensions: &mut NativeContextExtensions,
-        tracer: Option<&mut MoveTraceBuilder>,
     ) -> VMResult<SerializedReturnValues> {
         move_vm_profiler::tracing_feature_enabled! {
             use move_vm_profiler::GasProfiler;
@@ -518,8 +519,95 @@ impl VMRuntime {
             gas_meter,
             extensions,
             bypass_declared_entry_check,
-            tracer,
+            None,
         )
+    }
+
+    pub fn call_trace(
+        &self,
+        module: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<Type>,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut impl DataStore,
+        gas_meter: &mut impl GasMeter,
+        extensions: &mut NativeContextExtensions,
+        tracer: Option<&mut MoveTraceBuilder>,
+    ) -> VMResult<(Result<SerializedReturnValues, VMError>, CallTraces)> {
+        // load the function
+        let (compiled, _, func, function_instantiation) =
+            self.loader
+                .load_function(module, function_name, &ty_args, data_store)?;
+
+        // load the function
+        let LoadedFunctionInstantiation {
+            parameters,
+            return_,
+        } = function_instantiation;
+
+        let arg_types = parameters
+            .into_iter()
+            .map(|ty| ty.subst(&ty_args))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+        let mut_ref_args = arg_types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, ty)| match ty {
+                Type::MutableReference(inner) => Some((idx, inner.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let (mut dummy_locals, deserialized_args) = self
+            .deserialize_args(arg_types, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+        let return_types = return_
+            .into_iter()
+            .map(|ty| ty.subst(&ty_args))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+
+        let (return_values, call_traces) = Interpreter::call_trace(
+            func,
+            ty_args,
+            deserialized_args,
+            data_store,
+            gas_meter,
+            extensions,
+            &self.loader,
+            &mut tracer.map(VMTracer::new),
+        )?;
+
+        let serialization_result = (|| {
+            let serialized_return_values = self
+                .serialize_return_values(&return_types, return_values)
+                .map_err(|e| e.finish(Location::Undefined))?;
+            let serialized_mut_ref_outputs = mut_ref_args
+                .into_iter()
+                .map(|(idx, ty)| {
+                    // serialize return values first in the case that a value points into this local
+                    let local_val = dummy_locals.move_loc(
+                        idx,
+                        self.loader
+                            .vm_config()
+                            .enable_invariant_violation_check_in_swap_loc,
+                    )?;
+                    let (bytes, layout) = self.serialize_return_value(&ty, local_val)?;
+                    Ok((idx as LocalIndex, bytes, layout))
+                })
+                .collect::<PartialVMResult<_>>()
+                .map_err(|e| e.finish(Location::Undefined))?;
+
+            Ok(SerializedReturnValues {
+                mutable_reference_outputs: serialized_mut_ref_outputs,
+                return_values: serialized_return_values,
+            })
+        })();
+
+        // locals should not be dropped until all return values are serialized
+        std::mem::drop(dummy_locals);
+
+        Ok((serialization_result, call_traces))
     }
 
     pub fn type_to_fully_annotated_layout(&self, ty: &Type) -> VMResult<A::MoveTypeLayout> {

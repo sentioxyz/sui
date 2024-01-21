@@ -27,7 +27,8 @@ RUN cargo build --profile ${PROFILE} \
     --bin sui \
     --bin sui-faucet \
     --bin sui-cluster-test \
-    --bin sui-tool
+    --bin sui-tool \
+    --bin sui-trace-server
 
 # Production Image
 FROM debian:bullseye-slim AS runtime
@@ -48,6 +49,7 @@ COPY --from=builder /sui/target/release/sui /usr/local/bin
 COPY --from=builder /sui/target/release/sui-faucet /usr/local/bin
 COPY --from=builder /sui/target/release/sui-cluster-test /usr/local/bin
 COPY --from=builder /sui/target/release/sui-tool /usr/local/bin
+COPY --from=builder /sui/target/release/sui-trace-server /usr/local/bin
 
 ARG BUILD_DATE
 ARG GIT_REVISION

@@ -27,7 +27,9 @@ mod checked {
         errors::{Location, PartialVMError, PartialVMResult, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
         CompiledModule,
+        call_trace::CallTraces,
     };
+    use move_core_types::gas_algebra::NumBytes;
     use move_core_types::resolver::ModuleResolver;
     use move_core_types::vm_status::StatusCode;
     use move_core_types::{
@@ -594,6 +596,16 @@ mod checked {
 
         /// Determine the object changes and collect all user events
         pub fn finish<Mode: ExecutionMode>(self) -> Result<ExecutionResults, ExecutionError> {
+            if Mode::get_call_trace() {
+                // return finished results
+                return Ok(ExecutionResults::V2(ExecutionResultsV2 {
+                    written_objects: BTreeMap::new(),
+                    modified_objects: BTreeSet::new(),
+                    created_object_ids: BTreeSet::new(),
+                    deleted_object_ids: BTreeSet::new(),
+                    user_events: Vec::new(),
+                }));
+            }
             let Self {
                 protocol_config,
                 vm,
@@ -976,7 +988,27 @@ mod checked {
                 &mut data_store,
                 gas_status,
                 &mut self.native_extensions,
-                tracer.as_mut(),
+            )
+        }
+
+        pub(crate) fn call_trace(
+            &mut self,
+            module: &ModuleId,
+            function_name: &IdentStr,
+            ty_args: Vec<Type>,
+            args: Vec<impl Borrow<[u8]>>,
+        ) -> VMResult<(Result<SerializedReturnValues, VMError>, CallTraces)> {
+            let gas_status = self.gas_charger.move_gas_status_mut();
+            let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
+            self.vm.get_runtime().call_trace(
+                module,
+                function_name,
+                ty_args,
+                args,
+                &mut data_store,
+                gas_status,
+                &mut self.native_extensions,
+                None,
             )
         }
 
