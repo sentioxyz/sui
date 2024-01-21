@@ -28,6 +28,7 @@ pub mod u256;
 #[cfg(test)]
 mod unit_tests;
 pub mod vm_status;
+pub mod call_trace;
 
 pub(crate) fn fmt_list<T: fmt::Display>(
     f: &mut fmt::Formatter<'_>,

@@ -24,6 +24,7 @@ use move_core_types::{
     resolver::MoveResolver,
     runtime_value::MoveTypeLayout,
     vm_status::StatusCode,
+    call_trace::CallTraces,
 };
 use move_vm_config::runtime::VMConfig;
 use move_vm_types::{
@@ -502,6 +503,66 @@ impl VMRuntime {
             gas_meter,
             extensions,
             bypass_declared_entry_check,
+        )
+    }
+
+    pub fn call_trace(
+        &self,
+        module: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<Type>,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut DataStore,
+        gas_meter: &mut impl GasMeter,
+        extensions: &mut NativeContextExtensions,
+    ) -> VMResult<CallTraces> {
+        // load the function
+        let (module, function, function_instantiation) =
+            self.loader
+                .load_function(module, function_name, &ty_args, data_store)?;
+
+        // load the function
+        let LoadedFunctionInstantiation {
+            parameters,
+            return_: _,
+        } = function_instantiation;
+
+        use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
+        fn check_is_entry(
+            _resolver: &BinaryIndexedView,
+            is_entry: bool,
+            _parameters_idx: SignatureIndex,
+            _return_idx: Option<SignatureIndex>,
+        ) -> PartialVMResult<()> {
+            if is_entry {
+                Ok(())
+            } else {
+                Err(PartialVMError::new(
+                    StatusCode::EXECUTE_ENTRY_FUNCTION_CALLED_ON_NON_ENTRY_FUNCTION,
+                ))
+            }
+        }
+
+        let additional_signature_checks = check_is_entry;
+
+        script_signature::verify_module_function_signature_by_name(
+            module.module(),
+            IdentStr::new(function.as_ref().name()).expect(""),
+            additional_signature_checks,
+        )?;
+
+        let (_dummy_locals, deserialized_args) = self
+            .deserialize_args(ty_args, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+        Interpreter::call_trace(
+            function,
+            ty_args,
+            deserialized_args,
+            data_store,
+            gas_meter,
+            extensions,
+            &self.loader,
         )
     }
 
