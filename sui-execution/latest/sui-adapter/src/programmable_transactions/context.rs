@@ -27,7 +27,9 @@ mod checked {
         errors::{Location, PartialVMError, PartialVMResult, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
         CompiledModule,
+        call_trace::CallTraces,
     };
+    use move_core_types::gas_algebra::NumBytes;
     use move_core_types::resolver::ModuleResolver;
     use move_core_types::vm_status::StatusCode;
     use move_core_types::{
@@ -967,6 +969,26 @@ mod checked {
             let gas_status = self.gas_charger.move_gas_status_mut();
             let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
             self.vm.get_runtime().execute_function_bypass_visibility(
+                module,
+                function_name,
+                ty_args,
+                args,
+                &mut data_store,
+                gas_status,
+                &mut self.native_extensions,
+            )
+        }
+
+        pub(crate) fn call_trace(
+            &mut self,
+            module: &ModuleId,
+            function_name: &IdentStr,
+            ty_args: Vec<Type>,
+            args: Vec<impl Borrow<[u8]>>,
+        ) -> VMResult<(SerializedReturnValues, CallTraces)> {
+            let gas_status = self.gas_charger.move_gas_status_mut();
+            let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
+            self.vm.get_runtime().call_trace(
                 module,
                 function_name,
                 ty_args,

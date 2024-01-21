@@ -23,6 +23,7 @@ use sui_types::{
 
 use move_bytecode_verifier_meter::Meter;
 use move_vm_runtime_v1::move_vm::MoveVM;
+use sui_adapter_latest::execution_mode::TraceResult;
 use sui_adapter_v1::adapter::{new_move_vm, run_metered_move_bytecode_verifier};
 use sui_adapter_v1::execution_engine::{
     execute_genesis_state_update, execute_transaction_to_effects,
@@ -187,6 +188,36 @@ impl executor::Executor for Executor {
         store: Box<dyn TypeLayoutStore + 'store>,
     ) -> Box<dyn LayoutResolver + 'r> {
         Box::new(TypeLayoutResolver::new(&self.0, store))
+    }
+
+    fn dev_transaction_call_trace(
+        &self,
+        store: &dyn BackingStore,
+        // Configuration
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        certificate_deny_set: &HashSet<TransactionDigest>,
+        // Epoch
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        // Transaction Inputs
+        input_objects: CheckedInputObjects,
+        // Gas related
+        gas_coins: Vec<ObjectRef>,
+        gas_status: SuiGasStatus,
+        // Transaction
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        skip_all_checks: bool,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Result<TraceResult, ExecutionError>,
+    ) {
+        todo!()
     }
 }
 

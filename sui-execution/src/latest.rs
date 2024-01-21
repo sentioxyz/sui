@@ -35,6 +35,7 @@ use sui_verifier_latest::meter::SuiVerifierMeter;
 use crate::executor;
 use crate::verifier;
 use sui_adapter_latest::execution_mode;
+use sui_adapter_latest::execution_mode::TraceResult;
 
 pub(crate) struct Executor(Arc<MoveVM>);
 
@@ -187,6 +188,70 @@ impl executor::Executor for Executor {
         store: Box<dyn TypeLayoutStore + 'store>,
     ) -> Box<dyn LayoutResolver + 'r> {
         Box::new(TypeLayoutResolver::new(&self.0, store))
+    }
+
+    fn dev_transaction_call_trace(
+        &self,
+        store: &dyn BackingStore,
+        // Configuration
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        certificate_deny_set: &HashSet<TransactionDigest>,
+        // Epoch
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        // Transaction Inputs
+        input_objects: CheckedInputObjects,
+        // Gas related
+        gas_coins: Vec<ObjectRef>,
+        gas_status: SuiGasStatus,
+        // Transaction
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        skip_all_checks: bool,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Result<TraceResult, ExecutionError>,
+    ) {
+        if skip_all_checks {
+            execute_transaction_to_effects::<execution_mode::DevCallTrace<true>>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                certificate_deny_set,
+            )
+        } else {
+            execute_transaction_to_effects::<execution_mode::DevCallTrace<false>>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                certificate_deny_set,
+            )
+        }
     }
 }
 
