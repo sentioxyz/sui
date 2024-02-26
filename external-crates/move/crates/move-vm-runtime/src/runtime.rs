@@ -514,7 +514,6 @@ impl VMRuntime {
         &self,
         module: &ModuleId,
         function_name: &IdentStr,
-        param_types: Vec<Type>,
         ty_args: Vec<Type>,
         serialized_args: Vec<impl Borrow<[u8]>>,
         data_store: &mut impl DataStore,
@@ -556,7 +555,7 @@ impl VMRuntime {
             additional_signature_checks,
         )?;
 
-        let arg_types = param_types
+        let arg_types = parameters
             .into_iter()
             .map(|ty| ty.subst(&ty_args))
             .collect::<PartialVMResult<Vec<_>>>()
