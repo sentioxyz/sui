@@ -15,6 +15,7 @@ mod checked {
     };
     use move_core_types::{
         account_address::AccountAddress,
+        call_trace::CallTraces,
         identifier::IdentStr,
         language_storage::{ModuleId, TypeTag},
         u256::U256,
@@ -32,8 +33,6 @@ mod checked {
     };
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
-    use sui_types::execution_config_utils::to_binary_config;
-    use sui_types::storage::{get_package_objects, PackageObject};
     use sui_types::{
         base_types::{
             MoveObjectType, ObjectID, SuiAddress, TxContext, TxContextKind, RESOLVED_ASCII_STR,
@@ -53,6 +52,10 @@ mod checked {
         transaction::{Argument, Command, ProgrammableMoveCall, ProgrammableTransaction},
         transfer::RESOLVED_RECEIVING_STRUCT,
         SUI_FRAMEWORK_ADDRESS,
+    };
+    use sui_types::{
+        error::ExecutionError,
+        storage::{get_package_objects, PackageObject},
     };
     use sui_types::{
         execution_mode::ExecutionMode,
@@ -369,6 +372,18 @@ mod checked {
             tx_context_kind,
             serialized_arguments,
         )?;
+
+        if Mode::get_call_traces() {
+            let traces = get_move_call_trace(
+                context,
+                module_id,
+                function,
+                type_arguments,
+                tx_context_kind,
+                serialized_arguments,
+            )?;
+        };
+
         assert_invariant!(
             by_mut_ref.len() == mutable_reference_outputs.len(),
             "lost mutable input"
@@ -397,6 +412,44 @@ mod checked {
 
         context.linkage_view.restore_linkage(saved_linkage)?;
         res
+    }
+
+    /// Execute a move call and get the call trace
+    fn get_move_call_trace<Mode: ExecutionMode>(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        argument_updates: &mut Mode::ArgumentUpdates,
+        module_id: &ModuleId,
+        function: &IdentStr,
+        type_arguments: Vec<Type>,
+        arguments: Vec<Argument>,
+        is_init: bool,
+    ) -> Result<CallTraces, ExecutionError> {
+        // check that the function is either an entry function or a valid public function
+        let LoadedFunctionInfo {
+            kind,
+            signature,
+            return_value_kinds,
+            index,
+            last_instr,
+        } = check_visibility_and_signature::<Mode>(
+            context,
+            module_id,
+            function,
+            &type_arguments,
+            is_init,
+        )?;
+        // build the arguments, storing meta data about by-mut-ref args
+        let (tx_context_kind, by_mut_ref, serialized_arguments) =
+            build_move_args::<Mode>(context, module_id, function, kind, &signature, &arguments)?;
+        // invoke the VM and get the call traces
+        vm_move_call_trace(
+            context,
+            module_id,
+            function,
+            type_arguments,
+            tx_context_kind,
+            serialized_arguments,
+        )?;
     }
 
     fn write_back_results<Mode: ExecutionMode>(
@@ -785,6 +838,28 @@ mod checked {
             })?;
             context.tx_context.update_state(updated_ctx)?;
         }
+        Ok(result)
+    }
+
+    fn vm_move_call_trace(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        module_id: &ModuleId,
+        function: &IdentStr,
+        type_arguments: Vec<Type>,
+        tx_context_kind: TxContextKind,
+        mut serialized_arguments: Vec<Vec<u8>>,
+    ) -> Result<CallTraces, ExecutionError> {
+        match tx_context_kind {
+            TxContextKind::None => (),
+            TxContextKind::Mutable | TxContextKind::Immutable => {
+                serialized_arguments.push(context.tx_context.to_vec());
+            }
+        }
+        // script visibility checked manually for entry points
+        let mut result = context
+            .call_trace(module_id, function, type_arguments, serialized_arguments)
+            .map_err(|e| context.convert_vm_error(e))?;
+
         Ok(result)
     }
 
