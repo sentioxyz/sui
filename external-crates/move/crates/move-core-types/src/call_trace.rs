@@ -26,6 +26,11 @@ impl CallTraces {
         CallTraces(vec![], HashSet::new())
     }
 
+    pub fn override_call_trace(&mut self, call_traces: &CallTraces) {
+        self.0 = call_traces.0.clone();
+        self.1 = call_traces.1.clone();
+    }
+
     pub fn push(&mut self, trace: InternalCallTrace) -> Result<(), InternalCallTrace> {
         if self.0.len() < CALL_STACK_SIZE_LIMIT {
             self.0.push(trace);

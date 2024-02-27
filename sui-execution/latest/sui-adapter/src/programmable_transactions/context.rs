@@ -16,7 +16,6 @@ mod checked {
     use crate::error::convert_vm_error;
     use crate::gas_charger::GasCharger;
     use crate::programmable_transactions::linkage_view::LinkageView;
-    use move_binary_format::errors::VMResult;
     use move_binary_format::{
         errors::{Location, PartialVMError, PartialVMResult, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},

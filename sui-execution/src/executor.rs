@@ -11,7 +11,7 @@ use sui_types::{
     effects::TransactionEffects,
     error::ExecutionError,
     execution::TypeLayoutStore,
-    execution_mode::ExecutionResult,
+    execution_mode::{ExecutionResult, TraceResult},
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
     metrics::LimitsMetrics,
@@ -118,6 +118,6 @@ pub trait Executor {
     ) -> (
         InnerTemporaryStore,
         TransactionEffects,
-        Result<Vec<ExecutionResult>, ExecutionError>,
+        Result<TraceResult, ExecutionError>,
     );
 }
