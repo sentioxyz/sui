@@ -33,6 +33,7 @@ mod checked {
     };
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
+    use sui_types::storage::{get_package_objects, PackageObject};
     use sui_types::{
         base_types::{
             MoveObjectType, ObjectID, SuiAddress, TxContext, TxContextKind, RESOLVED_ASCII_STR,
@@ -52,10 +53,6 @@ mod checked {
         transaction::{Argument, Command, ProgrammableMoveCall, ProgrammableTransaction},
         transfer::RESOLVED_RECEIVING_STRUCT,
         SUI_FRAMEWORK_ADDRESS,
-    };
-    use sui_types::{
-        error::ExecutionError,
-        storage::{get_package_objects, PackageObject},
     };
     use sui_types::{
         execution_mode::ExecutionMode,
@@ -130,7 +127,7 @@ mod checked {
         command: Command,
     ) -> Result<(), ExecutionError> {
         let mut argument_updates = Mode::empty_arguments();
-        let results = match command {
+        let (results, trace_results) = match command {
             Command::MakeMoveVec(tag_opt, args) if args.is_empty() => {
                 let Some(tag) = tag_opt else {
                     invariant_violation!(
@@ -148,14 +145,17 @@ mod checked {
                     .map_err(|e| context.convert_vm_error(e))?;
                 // BCS layout for any empty vector should be the same
                 let bytes = bcs::to_bytes::<Vec<u8>>(&vec![]).unwrap();
-                vec![Value::Raw(
-                    RawValueType::Loaded {
-                        ty,
-                        abilities,
-                        used_in_non_entry_move_call: false,
-                    },
-                    bytes,
-                )]
+                (
+                    vec![Value::Raw(
+                        RawValueType::Loaded {
+                            ty,
+                            abilities,
+                            used_in_non_entry_move_call: false,
+                        },
+                        bytes,
+                    )],
+                    None,
+                )
             }
             Command::MakeMoveVec(tag_opt, args) => {
                 let mut res = vec![];
@@ -191,14 +191,17 @@ mod checked {
                     .get_runtime()
                     .get_type_abilities(&ty)
                     .map_err(|e| context.convert_vm_error(e))?;
-                vec![Value::Raw(
-                    RawValueType::Loaded {
-                        ty,
-                        abilities,
-                        used_in_non_entry_move_call,
-                    },
-                    res,
-                )]
+                (
+                    vec![Value::Raw(
+                        RawValueType::Loaded {
+                            ty,
+                            abilities,
+                            used_in_non_entry_move_call,
+                        },
+                        res,
+                    )],
+                    None,
+                )
             }
             Command::TransferObjects(objs, addr_arg) => {
                 let objs: Vec<ObjectValue> = objs
@@ -212,7 +215,7 @@ mod checked {
                     obj.ensure_public_transfer_eligible()?;
                     context.transfer_object(obj, addr)?;
                 }
-                vec![]
+                (vec![], None)
             }
             Command::SplitCoins(coin_arg, amount_args) => {
                 let mut obj: ObjectValue = context.borrow_arg_mut(0, coin_arg)?;
@@ -239,7 +242,7 @@ mod checked {
                     })
                     .collect::<Result<_, ExecutionError>>()?;
                 context.restore_arg::<Mode>(&mut argument_updates, coin_arg, Value::Object(obj))?;
-                split_coins
+                (split_coins, None)
             }
             Command::MergeCoins(target_arg, coin_args) => {
                 let mut target: ObjectValue = context.borrow_arg_mut(0, target_arg)?;
@@ -279,7 +282,7 @@ mod checked {
                     target_arg,
                     Value::Object(target),
                 )?;
-                vec![]
+                (vec![], None)
             }
             Command::MoveCall(move_call) => {
                 let ProgrammableMoveCall {
@@ -301,34 +304,55 @@ mod checked {
 
                 let original_address = context.set_link_context(package)?;
                 let runtime_id = ModuleId::new(original_address, module);
-                let return_values = execute_move_call::<Mode>(
-                    context,
-                    &mut argument_updates,
-                    &runtime_id,
-                    &function,
-                    loaded_type_arguments,
-                    arguments,
-                    /* is_init */ false,
-                );
+                if Mode::get_call_trace() {
+                    let call_traces = get_move_call_trace::<Mode>(
+                        context,
+                        &mut argument_updates,
+                        &runtime_id,
+                        &function,
+                        loaded_type_arguments,
+                        arguments,
+                        /* is_init */ false,
+                    );
+                    (vec![], Some(call_traces.unwrap()))
+                } else {
+                    let return_values = execute_move_call::<Mode>(
+                        context,
+                        &mut argument_updates,
+                        &runtime_id,
+                        &function,
+                        loaded_type_arguments,
+                        arguments,
+                        /* is_init */ false,
+                    );
 
-                context.linkage_view.reset_linkage();
-                return_values?
+                    context.linkage_view.reset_linkage();
+                    (return_values?, None)
+                }
             }
-            Command::Publish(modules, dep_ids) => {
-                execute_move_publish::<Mode>(context, &mut argument_updates, modules, dep_ids)?
-            }
-            Command::Upgrade(modules, dep_ids, current_package_id, upgrade_ticket) => {
+            Command::Publish(modules, dep_ids) => (
+                execute_move_publish::<Mode>(context, &mut argument_updates, modules, dep_ids)?,
+                None,
+            ),
+            Command::Upgrade(modules, dep_ids, current_package_id, upgrade_ticket) => (
                 execute_move_upgrade::<Mode>(
                     context,
                     modules,
                     dep_ids,
                     current_package_id,
                     upgrade_ticket,
-                )?
-            }
+                )?,
+                None,
+            ),
         };
 
-        Mode::finish_command(context, mode_results, argument_updates, &results)?;
+        Mode::finish_command(
+            context,
+            mode_results,
+            argument_updates,
+            &results,
+            &trace_results,
+        )?;
         context.push_command_results(results)?;
         Ok(())
     }
@@ -372,18 +396,6 @@ mod checked {
             tx_context_kind,
             serialized_arguments,
         )?;
-
-        if Mode::get_call_traces() {
-            let traces = get_move_call_trace(
-                context,
-                module_id,
-                function,
-                type_arguments,
-                tx_context_kind,
-                serialized_arguments,
-            )?;
-        };
-
         assert_invariant!(
             by_mut_ref.len() == mutable_reference_outputs.len(),
             "lost mutable input"
@@ -449,7 +461,7 @@ mod checked {
             type_arguments,
             tx_context_kind,
             serialized_arguments,
-        )?;
+        )
     }
 
     fn write_back_results<Mode: ExecutionMode>(

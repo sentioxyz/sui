@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use move_core_types::language_storage::TypeTag;
+use move_core_types::{call_trace::CallTraces, language_storage::TypeTag};
 
 use crate::{
     error::ExecutionError,
@@ -33,6 +33,9 @@ pub trait ExecutionMode {
     /// UpgradeCap is produced
     fn packages_are_predefined() -> bool;
 
+    /// If set, the call trace will be returned in the ExecutionResult
+    fn get_call_trace() -> bool;
+
     fn empty_arguments() -> Self::ArgumentUpdates;
 
     fn empty_results() -> Self::ExecutionResults;
@@ -49,6 +52,7 @@ pub trait ExecutionMode {
         acc: &mut Self::ExecutionResults,
         argument_updates: Self::ArgumentUpdates,
         command_result: &[Value],
+        trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError>;
 }
 
@@ -75,6 +79,10 @@ impl ExecutionMode for Normal {
         false
     }
 
+    fn get_call_trace() -> bool {
+        false
+    }
+
     fn empty_arguments() -> Self::ArgumentUpdates {}
 
     fn empty_results() -> Self::ExecutionResults {}
@@ -93,6 +101,7 @@ impl ExecutionMode for Normal {
         _acc: &mut Self::ExecutionResults,
         _argument_updates: Self::ArgumentUpdates,
         _command_result: &[Value],
+        _trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError> {
         Ok(())
     }
@@ -121,6 +130,10 @@ impl ExecutionMode for Genesis {
         false
     }
 
+    fn get_call_trace() -> bool {
+        false
+    }
+
     fn empty_arguments() -> Self::ArgumentUpdates {}
 
     fn empty_results() -> Self::ExecutionResults {}
@@ -139,6 +152,7 @@ impl ExecutionMode for Genesis {
         _acc: &mut Self::ExecutionResults,
         _argument_updates: Self::ArgumentUpdates,
         _command_result: &[Value],
+        _trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError> {
         Ok(())
     }
@@ -173,6 +187,10 @@ impl ExecutionMode for System {
         true
     }
 
+    fn get_call_trace() -> bool {
+        false
+    }
+
     fn empty_arguments() -> Self::ArgumentUpdates {}
 
     fn empty_results() -> Self::ExecutionResults {}
@@ -191,6 +209,7 @@ impl ExecutionMode for System {
         _acc: &mut Self::ExecutionResults,
         _argument_updates: Self::ArgumentUpdates,
         _command_result: &[Value],
+        _trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError> {
         Ok(())
     }
@@ -226,6 +245,10 @@ impl<const SKIP_ALL_CHECKS: bool> ExecutionMode for DevInspect<SKIP_ALL_CHECKS> 
         false
     }
 
+    fn get_call_trace() -> bool {
+        false
+    }
+
     fn empty_arguments() -> Self::ArgumentUpdates {
         vec![]
     }
@@ -250,6 +273,7 @@ impl<const SKIP_ALL_CHECKS: bool> ExecutionMode for DevInspect<SKIP_ALL_CHECKS> 
         acc: &mut Self::ExecutionResults,
         argument_updates: Self::ArgumentUpdates,
         command_result: &[Value],
+        _trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError> {
         let command_bytes = command_result
             .iter()
@@ -285,4 +309,61 @@ fn value_to_bytes_and_tag(
         ),
     };
     Ok((bytes, type_tag))
+}
+
+pub struct DevCallTrace;
+
+pub type TraceResult = CallTraces;
+
+impl ExecutionMode for DevCallTrace {
+    type ArgumentUpdates = Vec<(Argument, Vec<u8>, TypeTag)>;
+    type ExecutionResults = TraceResult;
+
+    fn allow_arbitrary_function_calls() -> bool {
+        false
+    }
+
+    fn allow_arbitrary_values() -> bool {
+        false
+    }
+
+    fn skip_conservation_checks() -> bool {
+        false
+    }
+
+    fn packages_are_predefined() -> bool {
+        false
+    }
+
+    fn get_call_trace() -> bool {
+        true
+    }
+
+    fn empty_arguments() -> Self::ArgumentUpdates {
+        vec![]
+    }
+
+    fn empty_results() -> Self::ExecutionResults {
+        CallTraces::new()
+    }
+
+    fn add_argument_update(
+        _resolver: &impl TypeTagResolver,
+        _acc: &mut Self::ArgumentUpdates,
+        _arg: Argument,
+        _new_value: &Value,
+    ) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+
+    fn finish_command(
+        _resolver: &impl TypeTagResolver,
+        acc: &mut Self::ExecutionResults,
+        _argument_updates: Self::ArgumentUpdates,
+        _command_result: &[Value],
+        trace_results: &Option<CallTraces>,
+    ) -> Result<(), ExecutionError> {
+        acc.override_call_trace(trace_results.as_ref().unwrap());
+        Ok(())
+    }
 }

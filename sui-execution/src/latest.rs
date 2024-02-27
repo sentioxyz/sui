@@ -7,6 +7,7 @@ use std::{collections::HashSet, sync::Arc};
 use move_binary_format::CompiledModule;
 use move_vm_config::verifier::{MeterConfig, VerifierConfig};
 use sui_protocol_config::ProtocolConfig;
+use sui_types::execution_mode::TraceResult;
 use sui_types::{
     base_types::{ObjectRef, SuiAddress, TxContext},
     committee::EpochId,
@@ -213,9 +214,43 @@ impl executor::Executor for Executor {
     ) -> (
         InnerTemporaryStore,
         TransactionEffects,
-        Result<Vec<ExecutionResult>, ExecutionError>,
+        Result<TraceResult, ExecutionError>,
     ) {
-        todo!()
+        if skip_all_checks {
+            execute_transaction_to_effects::<execution_mode::DevCallTrace>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                certificate_deny_set,
+            )
+        } else {
+            execute_transaction_to_effects::<execution_mode::DevCallTrace>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                certificate_deny_set,
+            )
+        }
     }
 }
 
