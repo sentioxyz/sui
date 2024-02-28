@@ -25,7 +25,9 @@ use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_protocol_config::Chain;
 use sui_types::digests::TransactionDigest;
 use tracing::{error, info};
+pub mod call_trace;
 pub mod config;
+mod converter;
 mod data_fetcher;
 mod displays;
 pub mod fuzz;
@@ -154,6 +156,12 @@ pub enum ReplayToolCommand {
 
     #[command(name = "report")]
     Report,
+
+    #[command(name = "tt")]
+    TraceTransaction {
+        #[arg(long, short)]
+        tx_digest: String,
+    },
 }
 
 #[async_recursion]
@@ -199,6 +207,7 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 None,
+                false,
             )
             .await?;
 
@@ -282,6 +291,7 @@ pub async fn execute_replay_command(
                             None,
                             None,
                             None,
+                            false,
                         )
                         .await?;
 
@@ -384,6 +394,7 @@ pub async fn execute_replay_command(
                 executor_version,
                 protocol_version,
                 output_path,
+                false,
             )
             .await?;
 
@@ -409,6 +420,7 @@ pub async fn execute_replay_command(
                 executor_version,
                 protocol_version,
                 None,
+                false,
             )
             .await?;
 
@@ -580,6 +592,29 @@ pub async fn execute_replay_command(
                     return Err(e);
                 }
             }
+        }
+        ReplayToolCommand::TraceTransaction { tx_digest } => {
+            let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+            info!("Tracing tx: {}", tx_digest);
+            let sandbox_state = LocalExec::replay_with_network_config(
+                rpc_url,
+                cfg_path.map(|p| p.to_str().unwrap().to_string()),
+                tx_digest,
+                safety,
+                use_authority,
+                Some(2),
+                Some(0),
+                None,
+                true,
+            )
+            .await?;
+            match sandbox_state.trace_results {
+                Some(results) => println!("{}", serde_json::to_string_pretty(&results)?),
+                None => {
+                    println!("No trace results");
+                }
+            };
+            None
         }
     })
 }

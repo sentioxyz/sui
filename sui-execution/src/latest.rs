@@ -225,6 +225,7 @@ impl executor::Executor for Executor {
         skip_all_checks: bool,
     ) -> (
         InnerTemporaryStore,
+        SuiGasStatus,
         TransactionEffects,
         Result<TraceResult, ExecutionError>,
     ) {
