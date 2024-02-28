@@ -7,6 +7,7 @@ use std::{collections::HashSet, sync::Arc};
 use move_binary_format::CompiledModule;
 use move_vm_config::verifier::{MeterConfig, VerifierConfig};
 use sui_protocol_config::ProtocolConfig;
+use sui_types::execution_mode::TraceResult;
 use sui_types::{
     base_types::{ObjectRef, SuiAddress, TxContext},
     committee::EpochId,
@@ -187,6 +188,36 @@ impl executor::Executor for Executor {
         store: Box<dyn TypeLayoutStore + 'store>,
     ) -> Box<dyn LayoutResolver + 'r> {
         Box::new(TypeLayoutResolver::new(&self.0, store))
+    }
+
+    fn dev_transaction_call_trace(
+        &self,
+        store: &dyn BackingStore,
+        // Configuration
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        certificate_deny_set: &HashSet<TransactionDigest>,
+        // Epoch
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        // Transaction Inputs
+        input_objects: CheckedInputObjects,
+        // Gas related
+        gas_coins: Vec<ObjectRef>,
+        gas_status: SuiGasStatus,
+        // Transaction
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        skip_all_checks: bool,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Result<TraceResult, ExecutionError>,
+    ) {
+        todo!()
     }
 }
 

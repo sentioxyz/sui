@@ -7,6 +7,7 @@ use std::{collections::HashSet, sync::Arc};
 use move_binary_format::CompiledModule;
 use move_vm_config::verifier::{MeterConfig, VerifierConfig};
 use sui_protocol_config::ProtocolConfig;
+use sui_types::execution_mode::TraceResult;
 use sui_types::{
     base_types::{ObjectRef, SuiAddress, TxContext},
     committee::EpochId,
@@ -212,8 +213,9 @@ impl executor::Executor for Executor {
         skip_all_checks: bool,
     ) -> (
         InnerTemporaryStore,
+        SuiGasStatus,
         TransactionEffects,
-        Result<Vec<ExecutionResult>, ExecutionError>,
+        Result<TraceResult, ExecutionError>,
     ) {
         todo!()
     }

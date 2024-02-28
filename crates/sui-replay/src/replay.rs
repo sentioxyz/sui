@@ -1,8 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::call_trace::CallTraceWithSource;
 use crate::chain_from_chain_id;
 use crate::{
+    config::ReplayableNetworkConfigSet,
     data_fetcher::{
         extract_epoch_and_version, DataFetcher, Fetchers, NodeStateDumpFetcher, RemoteFetcher,
     },
@@ -22,6 +24,7 @@ use move_core_types::{
 };
 use prometheus::Registry;
 use serde::{Deserialize, Serialize};
+use shared_crypto::intent::Intent;
 use similar::{ChangeTag, TextDiff};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -78,6 +81,8 @@ pub struct ExecutionSandboxState {
     pub local_exec_status: Option<Result<(), ExecutionError>>,
     /// Pre exec diag info
     pub pre_exec_diag: DiagInfo,
+    /// Trace results
+    pub trace_results: Option<CallTraceWithSource>,
 }
 
 impl ExecutionSandboxState {
@@ -318,6 +323,7 @@ impl LocalExec {
         executor_version: Option<i64>,
         protocol_version: Option<i64>,
         enable_profiler: Option<PathBuf>,
+        enable_trace: bool,
     ) -> Result<ExecutionSandboxState, ReplayEngineError> {
         info!("Using RPC URL: {}", rpc_url);
         LocalExec::new_from_fn_url(&rpc_url)
@@ -331,6 +337,7 @@ impl LocalExec {
                 executor_version,
                 protocol_version,
                 enable_profiler,
+                enable_trace: bool,
             )
             .await
     }
@@ -381,6 +388,7 @@ impl LocalExec {
             executor_version: None,
             protocol_version: None,
             enable_profiler: None,
+            enable_trace: false,
         })
     }
 
@@ -424,6 +432,7 @@ impl LocalExec {
             executor_version: None,
             protocol_version: None,
             enable_profiler: None,
+            enable_trace: false,
         })
     }
 
@@ -607,6 +616,7 @@ impl LocalExec {
                     None,
                     None,
                     None,
+                    false,
                 )
                 .await
                 .map(|q| q.check_effects())
@@ -685,27 +695,56 @@ impl LocalExec {
         let expensive_checks = true;
         let transaction_kind = override_transaction_kind.unwrap_or(tx_info.kind.clone());
         let certificate_deny_set = HashSet::new();
-        let (inner_store, gas_status, effects, result) = if let Ok(gas_status) = SuiGasStatus::new(
+        let (inner_store, gas_status, effects, result, trace_result) = if let Ok(gas_status) = SuiGasStatus::new(
             tx_info.gas_budget,
             tx_info.gas_price,
             tx_info.reference_gas_price,
             protocol_config,
         ) {
-            executor.execute_transaction_to_effects(
-                &self,
-                protocol_config,
-                metrics.clone(),
-                expensive_checks,
-                &certificate_deny_set,
-                &tx_info.executed_epoch,
-                tx_info.epoch_start_timestamp,
-                CheckedInputObjects::new_for_replay(input_objects.clone()),
-                tx_info.gas.clone(),
-                gas_status,
-                transaction_kind.clone(),
-                tx_info.sender,
-                *tx_digest,
-            )
+            if self.enable_trace {
+                let (inner_store_, gas_status_, effects_, trace_result_) = executor
+                    .dev_transaction_call_trace(
+                        &self,
+                        protocol_config,
+                        metrics,
+                        expensive_checks,
+                        &certificate_deny_set,
+                        &tx_info.executed_epoch,
+                        epoch_start_timestamp,
+                        CheckedInputObjects::new_for_replay(input_objects),
+                        tx_info.gas.clone(),
+                        gas_status,
+                        transaction_kind.clone(),
+                        tx_info.sender,
+                        *tx_digest,
+                        false,
+                    );
+                (
+                    inner_store_,
+                    gas_status_,
+                    effects_,
+                    Ok(()),
+                    Some(trace_result_),
+                )
+            } else {
+                let (inner_store, gas_status, effects, result) =
+                    executor.execute_transaction_to_effects(
+                        &self,
+                        protocol_config,
+                        metrics.clone(),
+                        expensive_checks,
+                        &certificate_deny_set,
+                        &tx_info.executed_epoch,
+                        epoch_start_timestamp,
+                        CheckedInputObjects::new_for_replay(input_objects.clone()),
+                        tx_info.gas.clone(),
+                        gas_status,
+                        transaction_kind.clone(),
+                        tx_info.sender,
+                        *tx_digest,
+                );
+                (inner_store, gas_status, effects, result, None)
+            }
         } else {
             unreachable!("Transaction was valid so gas status must be valid");
         };
@@ -735,6 +774,12 @@ impl LocalExec {
             local_exec_effects: effects,
             local_exec_status: Some(result),
             pre_exec_diag: self.diag.clone(),
+            trace_results: match trace_result {
+                Some(trace_result) => Some(CallTraceWithSource::from(
+                    trace_result.unwrap().root().unwrap(),
+                )),
+                None => None,
+            },
         })
     }
 

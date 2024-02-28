@@ -13459,6 +13459,7 @@ dependencies = [
  "bcs",
  "clap",
  "futures",
+ "hex",
  "http",
  "jsonrpsee",
  "lru 0.10.0",
