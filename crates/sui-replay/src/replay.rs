@@ -82,7 +82,7 @@ pub struct ExecutionSandboxState {
     /// Pre exec diag info
     pub pre_exec_diag: DiagInfo,
     /// Trace results
-    pub trace_results: Option<CallTraceWithSource>,
+    pub trace_results: Option<Vec<CallTraceWithSource>>,
 }
 
 impl ExecutionSandboxState {
@@ -775,9 +775,12 @@ impl LocalExec {
             local_exec_status: Some(result),
             pre_exec_diag: self.diag.clone(),
             trace_results: match trace_result {
-                Some(trace_result) => Some(CallTraceWithSource::from(
-                    trace_result.unwrap().root().unwrap(),
-                )),
+                Some(trace_result) => Some(
+                    trace_result.unwrap().0
+                        .into_iter()
+                        .map(|c| CallTraceWithSource::from(c))
+                        .collect(),
+                ),
                 None => None,
             },
         })

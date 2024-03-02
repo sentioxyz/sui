@@ -348,11 +348,13 @@ impl ExecutionMode for DevCallTrace {
     }
 
     fn add_argument_update(
-        _resolver: &impl TypeTagResolver,
-        _acc: &mut Self::ArgumentUpdates,
-        _arg: Argument,
-        _new_value: &Value,
+        resolver: &impl TypeTagResolver,
+        acc: &mut Self::ArgumentUpdates,
+        arg: Argument,
+        new_value: &Value,
     ) -> Result<(), ExecutionError> {
+        let (bytes, type_tag) = value_to_bytes_and_tag(resolver, new_value)?;
+        acc.push((arg, bytes, type_tag));
         Ok(())
     }
 

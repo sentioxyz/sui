@@ -965,7 +965,7 @@ mod checked {
             function_name: &IdentStr,
             ty_args: Vec<Type>,
             args: Vec<impl Borrow<[u8]>>,
-        ) -> VMResult<CallTraces> {
+        ) -> VMResult<(SerializedReturnValues, CallTraces)> {
             let gas_status = self.gas_charger.move_gas_status_mut();
             let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
             self.vm.get_runtime().call_trace(

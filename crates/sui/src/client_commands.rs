@@ -611,7 +611,7 @@ pub enum SuiClientCommands {
         terminate_early: bool,
     },
 
-    #[command(name = "trace-transactions")]
+    #[command(name = "trace-transaction")]
     TraceTransactions {
         /// The digest of the transaction to replay
         #[arg(long, short)]

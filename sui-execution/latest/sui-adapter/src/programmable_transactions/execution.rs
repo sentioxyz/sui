@@ -304,17 +304,20 @@ mod checked {
 
                 let original_address = context.set_link_context(package)?;
                 let runtime_id = ModuleId::new(original_address, module);
+                let mut _call_traces = CallTraces::new();
                 if Mode::get_call_trace() {
-                    let call_traces = get_move_call_trace::<Mode>(
+                    let (return_values, call_traces) = get_move_call_trace::<Mode>(
                         context,
                         &mut argument_updates,
                         &runtime_id,
                         &function,
-                        loaded_type_arguments,
-                        arguments,
+                        loaded_type_arguments.clone(),
+                        arguments.clone(),
                         /* is_init */ false,
-                    );
-                    (vec![], Some(call_traces.unwrap()))
+                    )?;
+
+                    context.linkage_view.reset_linkage();
+                    (return_values, Some(call_traces))
                 } else {
                     let return_values = execute_move_call::<Mode>(
                         context,
@@ -435,7 +438,7 @@ mod checked {
         type_arguments: Vec<Type>,
         arguments: Vec<Argument>,
         is_init: bool,
-    ) -> Result<CallTraces, ExecutionError> {
+    ) -> Result<(Vec<Value>, CallTraces), ExecutionError> {
         // check that the function is either an entry function or a valid public function
         let LoadedFunctionInfo {
             kind,
@@ -454,14 +457,49 @@ mod checked {
         let (tx_context_kind, by_mut_ref, serialized_arguments) =
             build_move_args::<Mode>(context, module_id, function, kind, &signature, &arguments)?;
         // invoke the VM and get the call traces
-        vm_move_call_trace(
+        let (
+            SerializedReturnValues {
+                mutable_reference_outputs,
+                return_values,
+            },
+            call_traces,
+        ) = vm_move_call_trace(
             context,
             module_id,
             function,
             type_arguments,
             tx_context_kind,
             serialized_arguments,
-        )
+        )?;
+
+        assert_invariant!(
+            by_mut_ref.len() == mutable_reference_outputs.len(),
+            "lost mutable input"
+        );
+
+        context.take_user_events(module_id, index, last_instr)?;
+
+        // save the link context because calls to `make_value` below can set new ones, and we don't want
+        // it to be clobbered.
+        let saved_linkage = context.linkage_view.steal_linkage();
+        // write back mutable inputs. We also update if they were used in non entry Move calls
+        // though we do not care for immutable usages of objects or other values
+        let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
+        let res = write_back_results::<Mode>(
+            context,
+            argument_updates,
+            &arguments,
+            used_in_non_entry_move_call,
+            mutable_reference_outputs
+                .into_iter()
+                .map(|(i, bytes, _layout)| (i, bytes)),
+            by_mut_ref,
+            return_values.into_iter().map(|(bytes, _layout)| bytes),
+            return_value_kinds,
+        )?;
+
+        context.linkage_view.restore_linkage(saved_linkage)?;
+        Ok((res, call_traces))
     }
 
     fn write_back_results<Mode: ExecutionMode>(
@@ -860,7 +898,7 @@ mod checked {
         type_arguments: Vec<Type>,
         tx_context_kind: TxContextKind,
         mut serialized_arguments: Vec<Vec<u8>>,
-    ) -> Result<CallTraces, ExecutionError> {
+    ) -> Result<(SerializedReturnValues, CallTraces), ExecutionError> {
         match tx_context_kind {
             TxContextKind::None => (),
             TxContextKind::Mutable | TxContextKind::Immutable => {

@@ -580,7 +580,7 @@ pub async fn execute_replay_command(
                 safety,
                 use_authority,
                 Some(2),
-                Some(0),
+                None,
                 None,
                 true,
             )

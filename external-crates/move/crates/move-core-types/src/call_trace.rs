@@ -27,8 +27,12 @@ impl CallTraces {
     }
 
     pub fn override_call_trace(&mut self, call_traces: &CallTraces) {
-        self.0 = call_traces.0.clone();
-        self.1 = call_traces.1.clone();
+        call_traces.0.iter().for_each(|call_trace| {
+            self.0.push(call_trace.clone());
+        });
+        call_traces.1.iter().for_each(|account| {
+            self.1.insert(account.clone());
+        });
     }
 
     pub fn push(&mut self, trace: InternalCallTrace) -> Result<(), InternalCallTrace> {

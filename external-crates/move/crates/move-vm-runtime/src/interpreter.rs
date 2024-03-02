@@ -162,7 +162,7 @@ impl Interpreter {
         gas_meter: &mut impl GasMeter,
         extensions: &mut NativeContextExtensions,
         loader: &Loader,
-    ) -> VMResult<CallTraces> {
+    ) -> VMResult<(Vec<Value>, CallTraces)> {
         let interpreter = Interpreter {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
@@ -328,7 +328,7 @@ impl Interpreter {
         function: Arc<Function>,
         ty_args: Vec<Type>,
         args: Vec<Value>,
-    ) -> VMResult<CallTraces> {
+    ) -> VMResult<(Vec<Value>, CallTraces)> {
         let mut locals = Locals::new(function.local_count());
         let mut args_1 = vec![];
         let mut call_traces = CallTraces::new();
@@ -380,6 +380,7 @@ impl Interpreter {
                         "entry point functions cannot have non-serializable return types".to_string(),
                     )
                 })?;
+
                 Ok(value.as_move_value(&layout))
                 // let annotated_layout = loader.type_to_fully_annotated_layout(ty);
                 // match annotated_layout {
@@ -456,7 +457,16 @@ impl Interpreter {
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            Ok(value.as_move_value(&layout))
+                            match layout {
+                                move_core_types::runtime_value::MoveTypeLayout::Struct(_) => {
+                                    Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                        "struct return type not supported".to_string(),
+                                    ))
+                                },
+                                _ => {
+                                    Ok(value.as_move_value(&layout))
+                                },
+                            }
                             // let annotated_layout = loader.type_to_fully_annotated_layout(ty);
                             // match annotated_layout {
                             //     Ok(a_layout) => {
@@ -476,7 +486,7 @@ impl Interpreter {
                         call_traces.push_call_trace(top_call);
                     } else {
                         // end of execution. `self` should no longer be used afterward
-                        return Ok(call_traces);
+                        return Ok((self.operand_stack.value, call_traces));
                     }
                 }
                 ExitCode::Call(fh_idx) => {
@@ -514,9 +524,9 @@ impl Interpreter {
 
                     // Load the current function
                     let (_, _, _, loaded_func) = loader.load_function(
-                        current_frame.function.module_id(),
-                        &IdentStr::new(current_frame.function.name()).unwrap(),
-                        current_frame.ty_args(),
+                        func.module_id(),
+                        &IdentStr::new(func.name()).unwrap(),
+                        &vec![],
                         data_store,
                     )?;
 
@@ -547,9 +557,7 @@ impl Interpreter {
                             Ok(value.as_move_value(&layout))
                         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
-                        type_args: current_frame.ty_args().into_iter().map(|ty| {
-                            loader.type_to_type_tag(ty).unwrap().to_string()
-                        }).collect(),
+                        type_args: vec![],
                         sub_traces: CallTraces::new(),
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -608,11 +616,12 @@ impl Interpreter {
                     }
                     // Load the current function
                     let (_, _, _, loaded_func) = loader.load_function(
-                        current_frame.function.module_id(),
-                        &IdentStr::new(current_frame.function.name()).unwrap(),
-                        current_frame.ty_args(),
+                        func.module_id(),
+                        &IdentStr::new(func.name()).unwrap(),
+                        &ty_args,
                         data_store,
                     )?;
+
                     call_traces.push(InternalCallTrace {
                         from_module_id: current_frame.function.module_id().to_string(),
                         pc: current_frame.pc,
@@ -640,7 +649,7 @@ impl Interpreter {
                             Ok(value.as_move_value(&layout))
                         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
-                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                        type_args: ty_args.iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),

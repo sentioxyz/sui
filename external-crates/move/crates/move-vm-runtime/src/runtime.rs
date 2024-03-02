@@ -515,7 +515,7 @@ impl VMRuntime {
         data_store: &mut impl DataStore,
         gas_meter: &mut impl GasMeter,
         extensions: &mut NativeContextExtensions,
-    ) -> VMResult<CallTraces> {
+    ) -> VMResult<(SerializedReturnValues, CallTraces)> {
         // load the function
         let (compiled, _, func, function_instantiation) =
             self.loader
@@ -524,43 +524,56 @@ impl VMRuntime {
         // load the function
         let LoadedFunctionInstantiation {
             parameters,
-            return_: _,
+            return_,
         } = function_instantiation;
 
-        use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
-        fn check_is_entry(
-            _resolver: &BinaryIndexedView,
-            is_entry: bool,
-            _parameters_idx: SignatureIndex,
-            _return_idx: Option<SignatureIndex>,
-        ) -> PartialVMResult<()> {
-            if is_entry {
-                Ok(())
-            } else {
-                Err(PartialVMError::new(
-                    StatusCode::EXECUTE_ENTRY_FUNCTION_CALLED_ON_NON_ENTRY_FUNCTION,
-                ))
-            }
-        }
+        // use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
+        // fn check_is_entry(
+        //     _resolver: &BinaryIndexedView,
+        //     is_entry: bool,
+        //     _parameters_idx: SignatureIndex,
+        //     _return_idx: Option<SignatureIndex>,
+        // ) -> PartialVMResult<()> {
+        //     if is_entry {
+        //         Ok(())
+        //     } else {
+        //         Err(PartialVMError::new(
+        //             StatusCode::EXECUTE_ENTRY_FUNCTION_CALLED_ON_NON_ENTRY_FUNCTION,
+        //         ))
+        //     }
+        // }
 
-        let additional_signature_checks = check_is_entry;
+        // let additional_signature_checks = check_is_entry;
 
-        script_signature::verify_module_function_signature_by_name(
-            compiled.as_ref(),
-            function_name,
-            additional_signature_checks,
-        )?;
+        // script_signature::verify_module_function_signature_by_name(
+        //     compiled.as_ref(),
+        //     function_name,
+        //     additional_signature_checks,
+        // )?;
 
         let arg_types = parameters
             .into_iter()
             .map(|ty| ty.subst(&ty_args))
             .collect::<PartialVMResult<Vec<_>>>()
             .map_err(|err| err.finish(Location::Undefined))?;
-        let (_dummy_locals, deserialized_args) = self
+        let mut_ref_args = arg_types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, ty)| match ty {
+                Type::MutableReference(inner) => Some((idx, inner.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let (mut dummy_locals, deserialized_args) = self
             .deserialize_args(arg_types, serialized_args)
             .map_err(|e| e.finish(Location::Undefined))?;
+        let return_types = return_
+            .into_iter()
+            .map(|ty| ty.subst(&ty_args))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
 
-        Interpreter::call_trace(
+        let (return_values, call_traces) = Interpreter::call_trace(
             func,
             ty_args,
             deserialized_args,
@@ -568,7 +581,37 @@ impl VMRuntime {
             gas_meter,
             extensions,
             &self.loader,
-        )
+        )?;
+
+        let serialized_return_values = self
+            .serialize_return_values(&return_types, return_values)
+            .map_err(|e| e.finish(Location::Undefined))?;
+        let serialized_mut_ref_outputs = mut_ref_args
+            .into_iter()
+            .map(|(idx, ty)| {
+                // serialize return values first in the case that a value points into this local
+                let local_val = dummy_locals.move_loc(
+                    idx,
+                    self.loader
+                        .vm_config()
+                        .enable_invariant_violation_check_in_swap_loc,
+                )?;
+                let (bytes, layout) = self.serialize_return_value(&ty, local_val)?;
+                Ok((idx as LocalIndex, bytes, layout))
+            })
+            .collect::<PartialVMResult<_>>()
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+        // locals should not be dropped until all return values are serialized
+        std::mem::drop(dummy_locals);
+
+        Ok((
+            SerializedReturnValues {
+                mutable_reference_outputs: serialized_mut_ref_outputs,
+                return_values: serialized_return_values,
+            },
+            call_traces,
+        ))
     }
 
     pub fn type_to_fully_annotated_layout(&self, ty: &Type) -> VMResult<A::MoveTypeLayout> {
