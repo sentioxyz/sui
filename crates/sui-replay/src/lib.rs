@@ -27,6 +27,9 @@ use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_protocol_config::Chain;
 use sui_types::digests::TransactionDigest;
 use tracing::{error, info};
+use crate::call_trace::CallTraceWithSource;
+use crate::types::ReplayEngineError;
+
 pub mod call_trace;
 
 pub mod batch_replay;
@@ -609,4 +612,32 @@ pub(crate) fn chain_from_chain_id(chain: &str) -> Chain {
     } else {
         Chain::Unknown
     }
+}
+
+pub async fn execute_call_trace(
+    rpc_url: Option<String>,
+    tx_digest: String,
+    safety_checks: bool,
+    use_authority: bool,
+    cfg_path: Option<PathBuf>,
+) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
+    let safety = if safety_checks {
+        ExpensiveSafetyCheckConfig::new_enable_all()
+    } else {
+        ExpensiveSafetyCheckConfig::default()
+    };
+    let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+    info!("Tracing tx: {}", tx_digest);
+    let sandbox_state = LocalExec::replay_with_network_config(
+        rpc_url,
+        cfg_path.map(|p| p.to_str().unwrap().to_string()),
+        tx_digest,
+        safety,
+        use_authority,
+        Some(2),
+        None,
+        None,
+        true,
+    ).await?;
+    Ok(sandbox_state.trace_results)
 }

@@ -612,7 +612,7 @@ pub enum SuiClientCommands {
     },
 
     #[command(name = "trace-transaction")]
-    TraceTransactions {
+    TraceTransaction {
         /// The digest of the transaction to replay
         #[arg(long, short)]
         tx_digest: String,
@@ -2094,7 +2094,7 @@ impl SuiClientCommands {
                 ptb.execute(context).await?;
                 SuiClientCommandResult::NoOutput
             }
-            SuiClientCommands::TraceTransactions { tx_digest } => {
+            SuiClientCommands::TraceTransaction { tx_digest } => {
                 let cmd = ReplayToolCommand::TraceTransaction { tx_digest };
 
                 let rpc = context.config.get_active_env()?.rpc.clone();
