@@ -1,5 +1,6 @@
 use crate::runtime_value::MoveValue;
 use std::collections::HashSet;
+use crate::annotated_value as A;
 const CALL_STACK_SIZE_LIMIT: usize = 1024;
 
 /// A call trace
@@ -11,8 +12,8 @@ pub struct InternalCallTrace {
     pub from_module_id: String,
     pub module_id: String,
     pub func_name: String,
-    pub inputs: Vec<MoveValue>,
-    pub outputs: Vec<MoveValue>,
+    pub inputs: Vec<A::MoveValue>,
+    pub outputs: Vec<A::MoveValue>,
     pub type_args: Vec<String>,
     pub sub_traces: CallTraces,
     pub fdef_idx: u16,
@@ -55,7 +56,7 @@ impl CallTraces {
         self.0.pop()
     }
 
-    pub fn set_outputs(&mut self, outputs: Vec<MoveValue>) {
+    pub fn set_outputs(&mut self, outputs: Vec<A::MoveValue>) {
         let length = self.0.len();
         self.0[length - 1].outputs = outputs
     }
