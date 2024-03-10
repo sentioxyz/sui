@@ -5,7 +5,7 @@
 use crate::{
     diag,
     diagnostics::{codes::WarningFilter, Diagnostic, WarningFilters},
-    editions::{self, create_feature_error, FeatureGate, Flavor},
+    editions::{self, create_feature_error, Edition, FeatureGate, Flavor},
     expansion::{
         alias_map_builder::{
             AliasEntry, AliasMapBuilder, NameSpace, ParserExplicitUseFun, UseFunsBuilder,
@@ -18,7 +18,7 @@ use crate::{
     ice,
     parser::ast::{
         self as P, Ability, BlockLabel, ConstantName, Field, FieldBindings, FunctionName,
-        ModuleName, Mutability, StructName, Var, ENTRY_MODIFIER, MACRO_MODIFIER, NATIVE_MODIFIER,
+        ModuleName, StructName, Var, ENTRY_MODIFIER, MACRO_MODIFIER, NATIVE_MODIFIER,
     },
     shared::{known_attributes::AttributePosition, unique_map::UniqueMap, *},
     FullyCompiledProgram,
@@ -26,6 +26,7 @@ use crate::{
 use move_command_line_common::parser::{parse_u16, parse_u256, parse_u32};
 use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::*;
+use move_proc_macros::growing_stack;
 use move_symbol_pool::Symbol;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -2804,6 +2805,7 @@ fn optional_types(context: &mut Context, pts_opt: Option<Vec<P::Type>>) -> Optio
 // Expressions
 //**************************************************************************************************
 
+#[growing_stack]
 fn sequence(context: &mut Context, loc: Loc, seq: P::Sequence) -> E::Sequence {
     let (puses, pitems, maybe_last_semicolon_loc, pfinal_item) = seq;
 
@@ -2831,6 +2833,7 @@ fn sequence(context: &mut Context, loc: Loc, seq: P::Sequence) -> E::Sequence {
     (use_funs, items)
 }
 
+#[growing_stack]
 fn sequence_item(context: &mut Context, sp!(loc, pitem_): P::SequenceItem) -> E::SequenceItem {
     use E::SequenceItem_ as ES;
     use P::SequenceItem_ as PS;
@@ -2873,6 +2876,7 @@ fn exps(context: &mut Context, pes: Vec<P::Exp>) -> Vec<E::Exp> {
         .collect()
 }
 
+#[growing_stack]
 fn exp(context: &mut Context, pe: Box<P::Exp>) -> Box<E::Exp> {
     use E::Exp_ as EE;
     use P::Exp_ as PE;
@@ -3197,6 +3201,7 @@ fn move_or_copy_path_(context: &mut Context, case: PathCase, pe: Box<P::Exp>) ->
     })
 }
 
+#[growing_stack]
 fn exp_dotted(context: &mut Context, pdotted: Box<P::Exp>) -> Option<Box<E::ExpDotted>> {
     use E::ExpDotted_ as EE;
     use P::Exp_ as PE;
@@ -3365,7 +3370,7 @@ fn bind(context: &mut Context, sp!(loc, pb_): P::Bind) -> Option<E::LValue> {
         PB::Var(pmut, v) => {
             let emut = mutability(context, v.loc(), pmut);
             check_valid_local_name(context, &v);
-            EL::Var(emut, sp(loc, E::ModuleAccess_::Name(v.0)), None)
+            EL::Var(Some(emut), sp(loc, E::ModuleAccess_::Name(v.0)), None)
         }
         PB::Unpack(ptn, ptys_opt, pfields) => {
             let tn = context.name_access_chain_to_module_access(Access::ApplyNamed, *ptn)?;
@@ -3538,19 +3543,19 @@ fn assign_unpack_fields(
     ))
 }
 
-fn mutability(context: &mut Context, loc: Loc, pmut: Mutability) -> Mutability {
-    let supports_let_mut = {
-        let pkg = context.current_package;
-        context.env().supports_feature(pkg, FeatureGate::LetMut)
-    };
+fn mutability(context: &mut Context, _loc: Loc, pmut: P::Mutability) -> E::Mutability {
+    let pkg = context.current_package;
+    let supports_let_mut = context.env().supports_feature(pkg, FeatureGate::LetMut);
     match pmut {
         Some(loc) => {
             assert!(supports_let_mut, "ICE mut should not parse without let mut");
-            Some(loc)
+            E::Mutability::Mut(loc)
         }
-        None if supports_let_mut => None,
+        None if supports_let_mut => E::Mutability::Imm,
+        // Mark as imm to force errors during migration
+        None if context.env().edition(pkg) == Edition::E2024_MIGRATION => E::Mutability::Imm,
         // without let mut enabled, all locals are mutable and do not need the annotation
-        None => Some(loc),
+        None => E::Mutability::Either,
     }
 }
 
