@@ -304,7 +304,6 @@ mod checked {
 
                 let original_address = context.set_link_context(package)?;
                 let runtime_id = ModuleId::new(original_address, module);
-                let mut _call_traces = CallTraces::new();
                 if Mode::get_call_trace() {
                     let (return_values, call_traces) = get_move_call_trace::<Mode>(
                         context,
@@ -909,6 +908,25 @@ mod checked {
         let mut result = context
             .call_trace(module_id, function, type_arguments, serialized_arguments)
             .map_err(|e| context.convert_vm_error(e))?;
+
+        // When this function is used during publishing, it
+        // may be executed several times, with objects being
+        // created in the Move VM in each Move call. In such
+        // case, we need to update TxContext value so that it
+        // reflects what happened each time we call into the
+        // Move VM (e.g. to account for the number of created
+        // objects).
+        if tx_context_kind == TxContextKind::Mutable {
+            let Some((_, ctx_bytes, _)) = result.0.mutable_reference_outputs.pop() else {
+                invariant_violation!("Missing TxContext in reference outputs");
+            };
+            let updated_ctx: TxContext = bcs::from_bytes(&ctx_bytes).map_err(|e| {
+                ExecutionError::invariant_violation(format!(
+                    "Unable to deserialize TxContext bytes. {e}"
+                ))
+            })?;
+            context.tx_context.update_state(updated_ctx)?;
+        }
 
         Ok(result)
     }
