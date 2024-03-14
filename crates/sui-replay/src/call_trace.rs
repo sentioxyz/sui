@@ -20,6 +20,7 @@ pub struct CallTraceWithSource {
     pub calls: Vec<CallTraceWithSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    pub pc: u16,
 }
 
 impl CallTraceWithSource {
@@ -34,6 +35,7 @@ impl CallTraceWithSource {
             type_args: vec![],
             calls: vec![],
             location: None,
+            pc: 0,
         }
     }
 
@@ -74,6 +76,7 @@ impl CallTraceWithSource {
                 .map(|sub_trace| CallTraceWithSource::from(sub_trace))
                 .collect(),
             location: None,
+            pc: call_trace.pc
         }
     }
 }
