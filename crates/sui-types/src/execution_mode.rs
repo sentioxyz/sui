@@ -365,7 +365,12 @@ impl ExecutionMode for DevCallTrace {
         _command_result: &[Value],
         trace_results: &Option<CallTraces>,
     ) -> Result<(), ExecutionError> {
-        acc.override_call_trace(trace_results.as_ref().unwrap());
+        match trace_results {
+            None => {}
+            Some(trace_result) => {
+                acc.override_call_trace(trace_result);
+            }
+        }
         Ok(())
     }
 }

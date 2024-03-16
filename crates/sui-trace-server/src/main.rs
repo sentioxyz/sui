@@ -7,6 +7,7 @@ use axum::{
 };
 use axum::extract::State;
 use sui_replay::call_trace::CallTraceWithSource;
+use sui_replay::types::ReplayEngineError;
 
 pub const DEFAULT_PORT: u16 = 9301;
 
@@ -41,13 +42,21 @@ async fn main() {
 async fn call_trace(
     extract::Path(tx_digest): extract::Path<String>,
     State(config): State<AppConfig>,
-) -> Json<Option<Vec<CallTraceWithSource>>> {
+) -> Result<Json<Option<Vec<CallTraceWithSource>>>, ReplayEngineError> {
     let trace_result = sui_replay::execute_call_trace(
         Some(config.rpc_url),
         tx_digest,
         false,
         false,
         None
-    ).await.unwrap();
-    Json(trace_result)
+    ).await;
+    return match trace_result {
+        Ok(res) => {
+            Ok(Json(res))
+        }
+        Err(err) => {
+            println!("Error: {:?}", err);
+            Err(err)
+        }
+    }
 }
