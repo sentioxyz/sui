@@ -410,8 +410,13 @@ impl CompilationEnv {
     }
 
     /// Should only be called after compilation is finished
+    pub fn take_final_diags(&mut self) -> Diagnostics {
+        std::mem::take(&mut self.diags)
+    }
+
+    /// Should only be called after compilation is finished
     pub fn take_final_warning_diags(&mut self) -> Diagnostics {
-        let final_diags = std::mem::take(&mut self.diags);
+        let final_diags = self.take_final_diags();
         debug_assert!(final_diags
             .max_severity()
             .map(|s| s == Severity::Warning)
@@ -462,12 +467,7 @@ impl CompilationEnv {
         attr_name: FilterPrefix,
         filters: Vec<WarningFilter>,
     ) -> anyhow::Result<()> {
-        let prev = self.known_filters.insert(attr_name, BTreeMap::new());
-        anyhow::ensure!(
-            prev.is_none(),
-            "A known filter attr for '{attr_name:?}' already exists"
-        );
-        let filter_attr = self.known_filters.get_mut(&attr_name).unwrap();
+        let filter_attr = self.known_filters.entry(attr_name).or_default();
         for filter in filters {
             let (prefix, n) = match filter {
                 WarningFilter::All(prefix) => (prefix, Symbol::from(FILTER_ALL)),

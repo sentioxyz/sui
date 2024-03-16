@@ -38,7 +38,10 @@ use crate::{
 };
 use move_ir_types::location::*;
 use move_proc_macros::growing_stack;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 //**************************************************************************************************
 // Entry
@@ -46,14 +49,18 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub fn program(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: N::Program,
 ) -> T::Program {
     let N::Program {
         info,
         inner: N::Program_ { modules: nmodules },
     } = prog;
-    let mut context = Box::new(Context::new(compilation_env, pre_compiled_lib, info));
+    let mut context = Box::new(Context::new(
+        compilation_env,
+        pre_compiled_lib.clone(),
+        info,
+    ));
 
     extract_macros(&mut context, &nmodules);
     let mut modules = modules(&mut context, nmodules);
@@ -245,7 +252,7 @@ fn function(context: &mut Context, name: FunctionName, f: N::Function) -> T::Fun
     context.current_function = Some(name);
     context.in_macro_function = macro_.is_some();
     process_attributes(context, &attributes);
-    let visibility =
+    let compiled_visibility =
         match public_testing_visibility(context.env, context.current_package, &name, entry) {
             Some(PublicForTesting::Entry(loc)) => Visibility::Public(loc),
             None => visibility,
@@ -265,6 +272,7 @@ fn function(context: &mut Context, name: FunctionName, f: N::Function) -> T::Fun
         warning_filter,
         index,
         attributes,
+        compiled_visibility,
         visibility,
         entry,
         macro_,

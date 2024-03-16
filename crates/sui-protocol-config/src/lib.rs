@@ -111,6 +111,7 @@ const MAX_PROTOCOL_VERSION: u64 = 39;
 // Version 37: Reject entry functions with mutable Random.
 // Version 38: Allow skipped epochs for randomness updates.
 // Version 39: Extra version to fix `test_upgrade_compatibility` simtest.
+//             Reject PTBs that contain invalid commands after one that uses Random.
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
 
@@ -330,10 +331,6 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     receive_objects: bool,
 
-    // Enable v2 of Headers for Narwhal
-    #[serde(skip_serializing_if = "is_false")]
-    narwhal_header_v2: bool,
-
     // Enable random beacon protocol
     #[serde(skip_serializing_if = "is_false")]
     random_beacon: bool,
@@ -389,6 +386,10 @@ struct FeatureFlags {
     // Reject functions with mutable Random.
     #[serde(skip_serializing_if = "is_false")]
     reject_mutable_random_on_entry_functions: bool,
+
+    // Limit PTBs that contain invalid commands after one that uses Random.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_randomness_ptb_restrictions: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1109,17 +1110,8 @@ impl ProtocolConfig {
         self.enable_jwk_consensus_updates()
     }
 
-    pub fn narwhal_header_v2(&self) -> bool {
-        self.feature_flags.narwhal_header_v2
-    }
-
     pub fn random_beacon(&self) -> bool {
-        let ret = self.feature_flags.random_beacon;
-        if ret {
-            // random beacon requires narwhal v2 headers
-            assert!(self.feature_flags.narwhal_header_v2);
-        }
-        ret
+        self.feature_flags.random_beacon
     }
 
     pub fn enable_effects_v2(&self) -> bool {
@@ -1164,6 +1156,10 @@ impl ProtocolConfig {
 
     pub fn reject_mutable_random_on_entry_functions(&self) -> bool {
         self.feature_flags.reject_mutable_random_on_entry_functions
+    }
+
+    pub fn enable_randomness_ptb_restrictions(&self) -> bool {
+        self.feature_flags.enable_randomness_ptb_restrictions
     }
 }
 
@@ -1823,7 +1819,6 @@ impl ProtocolConfig {
                     }
                     // Only enable random beacon on devnet
                     if chain != Chain::Mainnet && chain != Chain::Testnet {
-                        cfg.feature_flags.narwhal_header_v2 = true;
                         cfg.feature_flags.random_beacon = true;
                         cfg.random_beacon_reduction_lower_bound = Some(1600);
                     }
@@ -1913,7 +1908,9 @@ impl ProtocolConfig {
                     }
                 }
                 38 => {}
-                39 => {}
+                39 => {
+                    cfg.feature_flags.enable_randomness_ptb_restrictions = true;
+                }
                 // Use this template when making changes:
                 //
                 //     // modify an existing constant.

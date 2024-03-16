@@ -29,6 +29,7 @@ use move_symbol_pool::Symbol;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     convert::TryInto,
+    sync::Arc,
 };
 
 type CollectedInfos = UniqueMap<FunctionName, CollectedInfo>;
@@ -36,7 +37,7 @@ type CollectedInfo = (Vec<(Mutability, Var, H::SingleType)>, Attributes);
 
 fn extract_decls(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: &G::Program,
 ) -> (
     HashMap<ModuleIdent, usize>,
@@ -109,7 +110,7 @@ fn extract_decls(
 
 pub fn program(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: G::Program,
 ) -> Vec<AnnotatedCompiledUnit> {
     let mut units = vec![];
@@ -454,7 +455,10 @@ fn function(
         warning_filter: _warning_filter,
         index: _index,
         attributes,
-        visibility: v,
+        compiled_visibility: v,
+        // original, declared visibility is ignored. This is primarily for marking entry functions
+        // as public in tests
+        visibility: _,
         entry,
         signature,
         body,

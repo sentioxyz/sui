@@ -1238,6 +1238,20 @@ impl SuiNode {
 
         consensus_adapter.swap_low_scoring_authorities(low_scoring_authorities.clone());
 
+        if epoch_store.randomness_state_enabled() {
+            let randomness_manager = RandomnessManager::try_new(
+                Arc::downgrade(&epoch_store),
+                consensus_adapter.clone(),
+                randomness_handle,
+                config.protocol_key_pair(),
+            )
+            .await
+            .map(Arc::new);
+            if let Some(randomness_manager) = &randomness_manager {
+                epoch_store.set_randomness_manager(randomness_manager.clone())?;
+            }
+        }
+
         let throughput_calculator = Arc::new(ConsensusThroughputCalculator::new(
             None,
             state.metrics.clone(),
@@ -1283,20 +1297,6 @@ impl SuiNode {
                 epoch_store.clone(),
                 consensus_adapter.clone(),
             );
-        }
-
-        if epoch_store.randomness_state_enabled() {
-            let randomness_manager = RandomnessManager::try_new(
-                Arc::downgrade(&epoch_store),
-                consensus_adapter.clone(),
-                randomness_handle,
-                config.protocol_key_pair(),
-            )
-            .await
-            .map(Arc::new);
-            if let Some(randomness_manager) = &randomness_manager {
-                epoch_store.set_randomness_manager(randomness_manager.clone())?;
-            }
         }
 
         Ok(ValidatorComponents {
@@ -1518,6 +1518,7 @@ impl SuiNode {
                 .await;
 
             if stop_condition == StopReason::RunWithRangeCondition {
+                SuiNode::shutdown(&self).await;
                 self.shutdown_channel_tx
                     .send(run_with_range)
                     .expect("RunWithRangeCondition met but failed to send shutdown message");
@@ -1702,6 +1703,12 @@ impl SuiNode {
         }
     }
 
+    async fn shutdown(&self) {
+        if let Some(validator_components) = &*self.validator_components.lock().await {
+            validator_components.consensus_manager.shutdown().await;
+        }
+    }
+
     async fn reconfigure_state(
         &self,
         state: &Arc<AuthorityState>,
@@ -1722,6 +1729,7 @@ impl SuiNode {
             next_epoch_start_system_state,
             *last_checkpoint.digest(),
             state.get_object_store().as_ref(),
+            None,
         )
         .expect("EpochStartConfiguration construction cannot fail");
 

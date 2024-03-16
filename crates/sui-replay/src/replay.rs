@@ -2279,6 +2279,7 @@ async fn create_epoch_store(
         sys_state,
         CheckpointDigest::random(),
         &authority_state.get_object_store(),
+        None,
     )
     .unwrap();
 
