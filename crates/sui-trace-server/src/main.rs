@@ -6,8 +6,9 @@ use axum::{
     Json
 };
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use sui_replay::call_trace::CallTraceWithSource;
-use sui_replay::types::ReplayEngineError;
 
 pub const DEFAULT_PORT: u16 = 9301;
 
@@ -42,7 +43,7 @@ async fn main() {
 async fn call_trace(
     extract::Path(tx_digest): extract::Path<String>,
     State(config): State<AppConfig>,
-) -> Result<Json<Option<Vec<CallTraceWithSource>>>, ReplayEngineError> {
+) -> Result<Json<Option<Vec<CallTraceWithSource>>>, MyError> {
     let trace_result = sui_replay::execute_call_trace(
         Some(config.rpc_url),
         tx_digest,
@@ -55,8 +56,28 @@ async fn call_trace(
             Ok(Json(res))
         }
         Err(err) => {
-            println!("Error: {:?}", err);
-            Err(err)
+            Err(MyError::SomethingWentWrong {
+                message: format!("{:?}", err),
+            })
         }
+    }
+}
+
+enum MyError {
+    SomethingWentWrong {
+        message: String,
+    },
+}
+
+impl IntoResponse for MyError {
+    fn into_response(self) -> Response {
+        let body = match self {
+            MyError::SomethingWentWrong { message } => {
+                format!("Something went wrong: {}", message)
+            }
+        };
+
+        // its often easiest to implement `IntoResponse` by calling other implementations
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
     }
 }
