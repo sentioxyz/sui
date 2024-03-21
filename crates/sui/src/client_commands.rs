@@ -183,6 +183,10 @@ pub enum SuiClientCommands {
         #[clap(long)]
         gas_budget: u64,
 
+        /// Optional gas price for this call. Currently use only for testing and not in production enviroments.
+        #[clap(hide = true)]
+        gas_price: Option<u64>,
+
         /// Instead of executing the transaction, serialize the bcs bytes of the unsigned transaction data
         /// (TransactionData) using base64 encoding, and print out the string <TX_BYTES>. The string can
         /// be used to execute transaction with `sui client execute-signed-tx --tx-bytes <TX_BYTES>`.
@@ -1135,12 +1139,14 @@ impl SuiClientCommands {
                 type_args,
                 gas,
                 gas_budget,
+                gas_price,
                 args,
                 serialize_unsigned_transaction,
                 serialize_signed_transaction,
             } => {
                 let tx_data = construct_move_call_transaction(
-                    package, &module, &function, type_args, gas, gas_budget, args, context,
+                    package, &module, &function, type_args, gas, gas_budget, gas_price, args,
+                    context,
                 )
                 .await?;
                 serialize_or_execute!(
@@ -2086,6 +2092,7 @@ async fn construct_move_call_transaction(
     type_args: Vec<TypeTag>,
     gas: Option<ObjectID>,
     gas_budget: u64,
+    gas_price: Option<u64>,
     args: Vec<SuiJsonValue>,
     context: &mut WalletContext,
 ) -> Result<TransactionData, anyhow::Error> {
@@ -2106,7 +2113,7 @@ async fn construct_move_call_transaction(
     client
         .transaction_builder()
         .move_call(
-            sender, package, module, function, type_args, args, gas, gas_budget,
+            sender, package, module, function, type_args, args, gas, gas_budget, gas_price,
         )
         .await
 }
@@ -2263,7 +2270,7 @@ impl From<&GasCoin> for GasCoinOutput {
         Self {
             gas_coin_id: *gas_coin.id(),
             mist_balance: gas_coin.value(),
-            sui_balance: format_balance(gas_coin.value() as u128, 9, 3),
+            sui_balance: format_balance(gas_coin.value() as u128, 9, 2, None),
         }
     }
 }
@@ -2412,7 +2419,7 @@ fn pretty_print_balance(
     builder: &mut TableBuilder,
     with_coins: bool,
 ) {
-    let format_decmials = 3;
+    let format_decmials = 2;
     let mut table_builder = TableBuilder::default();
     if !with_coins {
         table_builder.set_header(vec!["coin", "balance (raw)", "balance", ""]);
@@ -2436,7 +2443,7 @@ fn pretty_print_balance(
             let coin_numbers = if coins.len() != 1 { "coins" } else { "coin" };
             let balance_formatted = format!(
                 "({} {})",
-                format_balance(balance, coin_decimals, format_decmials),
+                format_balance(balance, coin_decimals, format_decmials, Some(symbol)),
                 symbol
             );
             let summary = format!(
@@ -2450,8 +2457,13 @@ fn pretty_print_balance(
                 inner_table.push_record(vec![
                     c.coin_object_id.to_string().as_str(),
                     c.balance.to_string().as_str(),
-                    format_balance(c.balance as u128, coin_decimals, format_decmials).as_str(),
-                    symbol,
+                    format_balance(
+                        c.balance as u128,
+                        coin_decimals,
+                        format_decmials,
+                        Some(symbol),
+                    )
+                    .as_str(),
                 ]);
             }
             let mut table = inner_table.build();
@@ -2470,8 +2482,7 @@ fn pretty_print_balance(
             table_builder.push_record(vec![
                 name,
                 balance.to_string().as_str(),
-                format_balance(balance, coin_decimals, format_decmials).as_str(),
-                symbol,
+                format_balance(balance, coin_decimals, format_decmials, Some(symbol)).as_str(),
             ]);
         }
     }
@@ -2495,47 +2506,42 @@ fn divide(value: u128, divisor: u128) -> (u128, u128) {
     (integer_part, fractional_part)
 }
 
-fn format_balance(value: u128, coin_decimals: u8, format_decimals: usize) -> String {
-    let divisor = 10u128.pow(coin_decimals as u32);
-    let (integer_part, fractional_part) = divide(value, divisor);
-
-    const BILLION: u128 = 1_000_000_000;
-    const MILLION: u128 = 1_000_000;
-    const THOUSAND: u128 = 1_000;
-
-    let (postfix, mut val) = {
-        if integer_part > BILLION {
-            let (int_part, frac_part) = divide(integer_part, BILLION);
-            ("B", format!("{}.{}", int_part, frac_part))
-        } else if integer_part > MILLION {
-            let (int_part, frac_part) = divide(integer_part, MILLION);
-            ("M", format!("{}.{}", int_part, frac_part))
-        } else if integer_part > THOUSAND {
-            let (int_part, frac_part) = divide(integer_part, THOUSAND);
-            ("K", format!("{}.{}", int_part, frac_part))
-        } else {
-            (
-                "",
-                format!(
-                    "{}.{:0width$}",
-                    integer_part,
-                    fractional_part,
-                    width = coin_decimals as usize
-                ),
-            )
-        }
+fn format_balance(
+    value: u128,
+    coin_decimals: u8,
+    format_decimals: usize,
+    symbol: Option<&str>,
+) -> String {
+    let mut suffix = if let Some(symbol) = symbol {
+        format!(" {symbol}")
+    } else {
+        "".to_string()
     };
 
-    let dot_idx = val.find('.');
-    if let Some(dot_idx) = dot_idx {
-        if dot_idx + format_decimals < val.len() {
-            val = val.split_at(dot_idx + format_decimals).0.to_string();
-        }
-    }
+    let mut coin_decimals = coin_decimals as u32;
+    let billions = 10u128.pow(coin_decimals + 9);
+    let millions = 10u128.pow(coin_decimals + 6);
+    let thousands = 10u128.pow(coin_decimals + 3);
+    let units = 10u128.pow(coin_decimals);
 
-    if postfix.is_empty() {
-        val
+    let (whole, fractional) = if value > billions {
+        coin_decimals += 9;
+        suffix = format!("B{suffix}");
+        divide(value, billions)
+    } else if value > millions {
+        coin_decimals += 6;
+        suffix = format!("M{suffix}");
+        divide(value, millions)
+    } else if value > thousands {
+        coin_decimals += 3;
+        suffix = format!("K{suffix}");
+        divide(value, thousands)
     } else {
-        format!("{val} {postfix}")
-    }
+        divide(value, units)
+    };
+
+    let mut fractional = format!("{fractional:0width$}", width = coin_decimals as usize);
+    fractional.truncate(format_decimals);
+
+    format!("{whole}.{fractional}{suffix}")
 }
