@@ -62,7 +62,7 @@ use crate::consensus_handler::{
     SequencedConsensusTransactionKind, VerifiedSequencedConsensusTransaction,
 };
 use crate::epoch::epoch_metrics::EpochMetrics;
-use crate::epoch::randomness::RandomnessManager;
+use crate::epoch::randomness::{RandomnessManager, RandomnessReporter};
 use crate::epoch::reconfiguration::ReconfigState;
 use crate::execution_cache::{ExecutionCache, ExecutionCacheRead};
 use crate::module_cache_metrics::ResolverMetrics;
@@ -302,7 +302,8 @@ pub struct AuthorityPerEpochStore {
     jwk_aggregator: Mutex<JwkAggregator>,
 
     /// State machine managing randomness DKG and generation.
-    randomness_manager: OnceCell<Arc<RandomnessManager>>,
+    randomness_manager: OnceCell<tokio::sync::Mutex<RandomnessManager>>,
+    randomness_reporter: OnceCell<RandomnessReporter>,
 }
 
 /// AuthorityEpochTables contains tables that contain data that is only valid within an epoch.
@@ -875,6 +876,7 @@ impl AuthorityPerEpochStore {
             chain_identifier,
             jwk_aggregator,
             randomness_manager: OnceCell::new(),
+            randomness_reporter: OnceCell::new(),
         });
         s.update_buffer_stake_metric();
         s
@@ -917,22 +919,27 @@ impl AuthorityPerEpochStore {
             .is_some()
     }
 
-    pub fn randomness_manager(&self) -> Option<Arc<RandomnessManager>> {
-        self.randomness_manager.get().cloned()
+    pub fn randomness_reporter(&self) -> Option<RandomnessReporter> {
+        self.randomness_reporter.get().cloned()
     }
 
     pub fn set_randomness_manager(
         &self,
-        randomness_manager: Arc<RandomnessManager>,
+        mut randomness_manager: RandomnessManager,
     ) -> SuiResult<()> {
+        let reporter = randomness_manager.reporter();
+        let result = randomness_manager.start_dkg();
         if self
             .randomness_manager
-            .set(randomness_manager.clone())
+            .set(tokio::sync::Mutex::new(randomness_manager))
             .is_err()
         {
             error!("BUG: `set_randomness_manager` called more than once; this should never happen");
         }
-        randomness_manager.start_dkg()
+        if self.randomness_reporter.set(reporter).is_err() {
+            error!("BUG: `set_randomness_manager` called more than once; this should never happen");
+        }
+        result
     }
 
     pub fn coin_deny_list_state_exists(&self) -> bool {
@@ -2001,15 +2008,6 @@ impl AuthorityPerEpochStore {
         jwk_aggregator.has_quorum_for_key(&(jwk_id.clone(), jwk.clone()))
     }
 
-    /// Caller is responsible to call consensus_message_processed before this method
-    pub async fn record_owned_object_cert_from_consensus(
-        &self,
-        batch: &mut DBBatch,
-        certificate: &VerifiedExecutableTransaction,
-    ) -> Result<(), SuiError> {
-        self.finish_consensus_certificate_process_with_batch(batch, certificate)
-    }
-
     /// Locks a sequence number for the shared objects of the input transaction. Also updates the
     /// last consensus index, consensus_message_processed and pending_certificates tables.
     /// This function must only be called from the consensus task (i.e. from handle_consensus_transaction).
@@ -2093,7 +2091,6 @@ impl AuthorityPerEpochStore {
             )?;
         }
 
-        self.finish_consensus_certificate_process_with_batch(write_batch, certificate)?;
         Ok(())
     }
 
@@ -2154,22 +2151,24 @@ impl AuthorityPerEpochStore {
     pub fn finish_consensus_certificate_process_with_batch(
         &self,
         batch: &mut DBBatch,
-        certificate: &VerifiedExecutableTransaction,
+        certificates: &[VerifiedExecutableTransaction],
     ) -> SuiResult {
-        batch.insert_batch(
-            &self.tables()?.pending_execution,
-            [(*certificate.digest(), certificate.clone().serializable())],
-        )?;
-        // User signatures are written in the same batch as consensus certificate processed flag,
-        // which means we won't attempt to insert this twice for the same tx digest
-        debug_assert!(!self
-            .tables()?
-            .user_signatures_for_checkpoints
-            .contains_key(certificate.digest())?);
-        batch.insert_batch(
-            &self.tables()?.user_signatures_for_checkpoints,
-            [(*certificate.digest(), certificate.tx_signatures().to_vec())],
-        )?;
+        for certificate in certificates {
+            batch.insert_batch(
+                &self.tables()?.pending_execution,
+                [(*certificate.digest(), certificate.clone().serializable())],
+            )?;
+            // User signatures are written in the same batch as consensus certificate processed flag,
+            // which means we won't attempt to insert this twice for the same tx digest
+            debug_assert!(!self
+                .tables()?
+                .user_signatures_for_checkpoints
+                .contains_key(certificate.digest())?);
+            batch.insert_batch(
+                &self.tables()?.user_signatures_for_checkpoints,
+                [(*certificate.digest(), certificate.tx_signatures().to_vec())],
+            )?;
+        }
         Ok(())
     }
 
@@ -2446,10 +2445,13 @@ impl AuthorityPerEpochStore {
         // If DKG is closed, we should now load any previously-deferred randomness-using tx
         // so we can decide what to do with them (execute or ignore, depending on whether
         // DKG was successful).
+        let mut randomness_manager = match self.randomness_manager.get() {
+            Some(rm) => Some(rm.lock().await),
+            None => None,
+        };
         let dkg_closed = self.randomness_state_enabled()
-            && self
-                .randomness_manager
-                .get()
+            && randomness_manager
+                .as_ref()
                 .expect("randomness manager should exist if randomness is enabled")
                 .is_dkg_closed();
         if dkg_closed {
@@ -2513,9 +2515,8 @@ impl AuthorityPerEpochStore {
         // 2. DKG is completed successfully
         // 3. we are still accepting certs
         let generate_randomness = dkg_closed
-            && self
-                .randomness_manager
-                .get()
+            && randomness_manager
+                .as_ref()
                 .expect("randomness manager should exist if randomness is enabled")
                 .is_dkg_successful()
             // It is ok to just release lock here as functions called by this one are the
@@ -2541,10 +2542,15 @@ impl AuthorityPerEpochStore {
                 cache_reader,
                 commit_round,
                 previously_deferred_tx_digests,
+                randomness_manager.as_deref_mut(),
                 dkg_closed,
                 generate_randomness,
             )
             .await?;
+        self.finish_consensus_certificate_process_with_batch(
+            &mut batch,
+            &transactions_to_schedule,
+        )?;
         self.record_consensus_commit_stats(&mut batch, consensus_stats)?;
 
         // Create pending checkpoints if we are still accepting tx.
@@ -2615,12 +2621,10 @@ impl AuthorityPerEpochStore {
         // Once commit processing is recorded, kick off randomness generation.
         if let Some(randomness_round) = randomness_round {
             let epoch = self.epoch();
-            let randomness_manager = self
-                .randomness_manager
-                .get()
+            randomness_manager
+                .as_ref()
                 .expect("randomness manager should exist if randomness round is provided")
-                .clone();
-            randomness_manager.generate_randomness(epoch, randomness_round);
+                .generate_randomness(epoch, randomness_round);
         }
 
         self.process_notifications(&notifications, &end_of_publish_transactions);
@@ -2716,6 +2720,7 @@ impl AuthorityPerEpochStore {
         cache_reader: &dyn ExecutionCacheRead,
         commit_round: Round,
         previously_deferred_tx_digests: HashSet<TransactionDigest>,
+        mut randomness_manager: Option<&mut RandomnessManager>,
         dkg_closed: bool,
         generate_randomness: bool,
     ) -> SuiResult<(
@@ -2727,7 +2732,9 @@ impl AuthorityPerEpochStore {
         bool,                    // true if final round
     )> {
         if generate_randomness {
-            assert!(dkg_closed); // invariant check
+            // invariant checks
+            assert!(randomness_manager.is_some());
+            assert!(dkg_closed);
         }
 
         let mut verified_certificates = Vec::with_capacity(transactions.len());
@@ -2768,9 +2775,8 @@ impl AuthorityPerEpochStore {
 
             // If we're generating randomness, update the randomness state object version.
             if generate_randomness {
-                let round = self
-                    .randomness_manager
-                    .get()
+                let round = randomness_manager
+                    .as_mut()
                     .expect("randomness manager should exist if randomness is enabled")
                     .reserve_next_randomness(batch)?;
                 reserved_randomness_round = Some(round);
@@ -2807,6 +2813,7 @@ impl AuthorityPerEpochStore {
                     checkpoint_service,
                     commit_round,
                     &previously_deferred_tx_digests,
+                    randomness_manager.as_deref_mut(),
                     dkg_closed,
                     generate_randomness,
                 )
@@ -2852,8 +2859,8 @@ impl AuthorityPerEpochStore {
         }
 
         if randomness_state_updated {
-            if let Some(randomness_manager) = self.randomness_manager.get() {
-                randomness_manager.advance_dkg(batch, commit_round)?;
+            if let Some(randomness_manager) = randomness_manager.as_mut() {
+                randomness_manager.advance_dkg(batch, commit_round).await?;
             }
         }
 
@@ -2987,6 +2994,7 @@ impl AuthorityPerEpochStore {
         checkpoint_service: &Arc<C>,
         commit_round: Round,
         previously_deferred_tx_digests: &HashSet<TransactionDigest>,
+        mut randomness_manager: Option<&mut RandomnessManager>,
         dkg_closed: bool,
         generating_randomness: bool,
     ) -> SuiResult<ConsensusCertificateResult> {
@@ -3023,8 +3031,7 @@ impl AuthorityPerEpochStore {
                     warn!("[Byzantine authority] Authority {:?} sent a new, previously unseen certificate {:?} after it sent EndOfPublish message to consensus", certificate_author.concise(), certificate.digest());
                     return Ok(ConsensusCertificateResult::Ignored);
                 }
-                // Safe because signatures are verified when VerifiedSequencedConsensusTransaction
-                // is constructed.
+                // Safe because signatures are verified when consensus called into SuiTxValidator::validate_batch.
                 let certificate = VerifiedCertificate::new_unchecked(*certificate.clone());
                 let certificate = VerifiedExecutableTransaction::new_from_certificate(certificate);
 
@@ -3074,9 +3081,6 @@ impl AuthorityPerEpochStore {
                         &certificate,
                     )
                     .await?;
-                } else {
-                    self.record_owned_object_cert_from_consensus(batch, &certificate)
-                        .await?;
                 }
 
                 Ok(ConsensusCertificateResult::SuiTransaction(certificate))
@@ -3155,15 +3159,13 @@ impl AuthorityPerEpochStore {
                 ..
             }) => {
                 if self.get_reconfig_state_read_lock_guard().should_accept_tx() {
-                    if let Some(randomness_manager) = self.randomness_manager.get() {
+                    if let Some(randomness_manager) = randomness_manager.as_mut() {
                         debug!(
                             "Received RandomnessDkgMessage from {:?}",
                             authority.concise()
                         );
                         match bcs::from_bytes(bytes) {
-                            Ok(message) => {
-                                randomness_manager.add_message(batch, authority, message)?
-                            }
+                            Ok(message) => randomness_manager.add_message(authority, message)?,
                             Err(e) => {
                                 warn!(
                                     "Failed to deserialize RandomnessDkgMessage from {:?}: {e:?}",
@@ -3190,7 +3192,7 @@ impl AuthorityPerEpochStore {
                 ..
             }) => {
                 if self.get_reconfig_state_read_lock_guard().should_accept_tx() {
-                    if let Some(randomness_manager) = self.randomness_manager.get() {
+                    if let Some(randomness_manager) = randomness_manager.as_mut() {
                         debug!(
                             "Received RandomnessDkgConfirmation from {:?}",
                             authority.concise()

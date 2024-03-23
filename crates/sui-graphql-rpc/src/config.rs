@@ -1,13 +1,13 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::functional_group::FunctionalGroup;
 use crate::types::big_int::BigInt;
 use async_graphql::*;
+use fastcrypto_zkp::bn254::zk_login_api::ZkLoginEnv;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
 use sui_json_rpc::name_service::NameServiceConfig;
-
-use crate::functional_group::FunctionalGroup;
 
 // TODO: calculate proper cost limits
 
@@ -42,6 +42,7 @@ pub(crate) const DEFAULT_SERVER_DB_URL: &str =
 pub(crate) const DEFAULT_SERVER_DB_POOL_SIZE: u32 = 3;
 pub(crate) const DEFAULT_SERVER_PROM_HOST: &str = "0.0.0.0";
 pub(crate) const DEFAULT_SERVER_PROM_PORT: u16 = 9184;
+pub(crate) const DEFAULT_WATERMARK_UPDATE_MS: u64 = 500;
 
 /// The combination of all configurations for the GraphQL service.
 #[derive(Serialize, Clone, Deserialize, Debug, Default)]
@@ -90,6 +91,12 @@ pub struct ServiceConfig {
 
     #[serde(default)]
     pub(crate) name_service: NameServiceConfig,
+
+    #[serde(default)]
+    pub(crate) background_tasks: BackgroundTasksConfig,
+
+    #[serde(default)]
+    pub(crate) zklogin: ZkLoginConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Copy)]
@@ -119,6 +126,13 @@ pub struct Limits {
     pub max_type_nodes: u32,
     #[serde(default)]
     pub max_move_value_depth: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub struct BackgroundTasksConfig {
+    #[serde(default)]
+    pub watermark_update_ms: u64,
 }
 
 #[derive(Debug)]
@@ -164,6 +178,12 @@ pub struct InternalFeatureConfig {
 pub struct TxExecFullNodeConfig {
     #[serde(default)]
     pub(crate) node_rpc_url: Option<String>,
+}
+
+#[derive(Serialize, Clone, Deserialize, Debug, Eq, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct ZkLoginConfig {
+    pub env: ZkLoginEnv,
 }
 
 /// The enabled features and service limits configured by the server.
@@ -323,6 +343,16 @@ impl ServiceConfig {
     pub fn read(contents: &str) -> Result<Self, toml::de::Error> {
         toml::de::from_str::<Self>(contents)
     }
+
+    pub fn test_defaults() -> Self {
+        Self {
+            background_tasks: BackgroundTasksConfig::test_defaults(),
+            zklogin: ZkLoginConfig {
+                env: ZkLoginEnv::Test,
+            },
+            ..Default::default()
+        }
+    }
 }
 
 impl Limits {
@@ -341,6 +371,14 @@ impl Ide {
     pub fn new(ide_title: Option<String>) -> Self {
         Self {
             ide_title: ide_title.unwrap_or_else(|| DEFAULT_IDE_TITLE.to_string()),
+        }
+    }
+}
+
+impl BackgroundTasksConfig {
+    pub fn test_defaults() -> Self {
+        Self {
+            watermark_update_ms: 100, // Set to 100ms for testing
         }
     }
 }
@@ -396,6 +434,14 @@ impl Default for InternalFeatureConfig {
             tracing: false,
             apollo_tracing: false,
             open_telemetry: false,
+        }
+    }
+}
+
+impl Default for BackgroundTasksConfig {
+    fn default() -> Self {
+        Self {
+            watermark_update_ms: DEFAULT_WATERMARK_UPDATE_MS,
         }
     }
 }
