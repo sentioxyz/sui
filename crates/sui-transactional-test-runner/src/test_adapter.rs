@@ -19,7 +19,7 @@ use move_command_line_common::{
     address::ParsedAddress, files::verify_and_create_named_address_mapping,
 };
 use move_compiler::{
-    editions::Edition,
+    editions::{Edition, Flavor},
     shared::{NumberFormat, NumericalAddress, PackageConfig, PackagePaths},
     Flags, FullyCompiledProgram,
 };
@@ -217,6 +217,7 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
             default_gas_price,
             object_snapshot_min_checkpoint_lag,
             object_snapshot_max_checkpoint_lag,
+            flavor,
         ) = match task_opt.map(|t| t.command) {
             Some((
                 InitCommand { named_addresses },
@@ -231,6 +232,7 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                     default_gas_price,
                     object_snapshot_min_checkpoint_lag,
                     object_snapshot_max_checkpoint_lag,
+                    flavor,
                 },
             )) => {
                 let map = verify_and_create_named_address_mapping(named_addresses).unwrap();
@@ -269,6 +271,7 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                     default_gas_price,
                     object_snapshot_min_checkpoint_lag,
                     object_snapshot_max_checkpoint_lag,
+                    flavor,
                 )
             }
             None => {
@@ -279,6 +282,7 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                     protocol_config,
                     false,
                     false,
+                    None,
                     None,
                     None,
                     None,
@@ -329,6 +333,7 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                     NumberFormat::Hex,
                 )),
                 Some(Edition::E2024_ALPHA),
+                flavor.or(Some(Flavor::Sui)),
             ),
             package_upgrade_mapping: BTreeMap::new(),
             accounts,
@@ -1865,6 +1870,7 @@ pub static PRE_COMPILED: Lazy<FullyCompiledProgram> = Lazy::new(|| {
     };
     let config = PackageConfig {
         edition: Edition::E2024_BETA,
+        flavor: Flavor::Sui,
         ..Default::default()
     };
     let fully_compiled_res = move_compiler::construct_pre_compiled_lib(
