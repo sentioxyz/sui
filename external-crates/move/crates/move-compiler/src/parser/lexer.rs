@@ -47,6 +47,7 @@ pub enum Tok {
     LessLess,
     Equal,
     EqualEqual,
+    EqualGreater,
     EqualEqualGreater,
     LessEqualEqualGreater,
     Greater,
@@ -126,11 +127,12 @@ impl fmt::Display for Tok {
             Semicolon => ";",
             Less => "<",
             LessEqual => "<=",
-            LessLess => "<<",
             Equal => "=",
             EqualEqual => "==",
             EqualEqualGreater => "==>",
+            EqualGreater => "=>",
             LessEqualEqualGreater => "<==>",
+            LessLess => "<<",
             Greater => ">",
             GreaterEqual => ">=",
             GreaterGreater => ">>",
@@ -208,6 +210,10 @@ impl<'input> Lexer<'input> {
 
     pub fn peek(&self) -> Tok {
         self.token
+    }
+
+    pub fn remaining(&self) -> &'input str {
+        &self.text[self.cur_start..]
     }
 
     pub fn content(&self) -> &'input str {
@@ -714,6 +720,8 @@ fn find_token(
         '=' => {
             if text.starts_with("==>") {
                 (Ok(Tok::EqualEqualGreater), 3)
+            } else if text.starts_with("=>") && edition.supports(FeatureGate::Enums) {
+                (Ok(Tok::EqualGreater), 2)
             } else if text.starts_with("==") {
                 (Ok(Tok::EqualEqual), 2)
             } else {
