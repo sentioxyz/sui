@@ -634,7 +634,7 @@ pub async fn execute_call_trace(
         tx_digest,
         safety,
         use_authority,
-        Some(2),
+        Some(-1),
         None,
         None,
         true,
