@@ -2,6 +2,14 @@ use anyhow::{anyhow, Result};
 use move_core_types::identifier::Identifier;
 use serde_json::{Map, Value};
 use move_core_types::annotated_value as A;
+use move_core_types::call_trace::InputValue;
+
+pub fn input_value_to_json(val: InputValue) -> Value {
+    match val {
+        InputValue::MoveValue(mv) => move_value_to_json(mv),
+        InputValue::String(s) => Value::String(s)
+    }
+}
 
 pub fn move_value_to_json(val: A::MoveValue) -> Value {
     match val {
@@ -19,7 +27,12 @@ pub fn move_value_to_json(val: A::MoveValue) -> Value {
                 Value::Array(vals.into_iter().map(|v| move_value_to_json(v)).collect())
             }
         }
-        A::MoveValue::Struct(move_struct) => struct_fields_to_json(move_struct.fields),
+        A::MoveValue::Struct(move_struct) => {
+            let mut map = Map::new();
+            map.insert("type".to_string(), serde_json::to_value(move_struct.type_).unwrap());
+            map.insert("fields".to_string(), struct_fields_to_json(move_struct.fields));
+            Value::Object(map)
+        },
         A::MoveValue::Signer(add) => serde_json::to_value(add).unwrap(),
         A::MoveValue::U16(n) => serde_json::to_value(n).unwrap(),
         A::MoveValue::U32(n) => serde_json::to_value(n).unwrap(),
