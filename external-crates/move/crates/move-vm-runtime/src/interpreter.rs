@@ -347,7 +347,7 @@ impl Interpreter {
         }
         let link_context = data_store.link_context();
         let mut current_frame = self
-            .make_new_frame(function, ty_args, locals)
+            .make_new_frame(function, ty_args.clone(), locals)
             .map_err(|err| self.set_location(err))?;
         // Load the current function
         let (_, _, _, loaded_func) = loader.load_function(
@@ -364,6 +364,10 @@ impl Interpreter {
             func_name: current_frame.function.name().to_string(),
             inputs: args_1.into_iter().zip(&loaded_func.parameters).map(|(value, ty)| {
                 let (ty, value) = match ty {
+                    Type::TyParam(idx) => {
+                        let ty = &ty_args[*idx as usize];
+                        (ty, value)
+                    },
                     Type::Reference(inner) | Type::MutableReference(inner) => {
                         let ref_value: Reference = value.cast().map_err(|_err| {
                             PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
@@ -606,6 +610,10 @@ impl Interpreter {
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().zip(&loaded_func.parameters).map(|(value, ty)| {
                             let (ty, value) = match ty {
+                                Type::TyParam(idx) => {
+                                    let ty = &ty_args[*idx as usize];
+                                    (ty, value)
+                                },
                                 Type::Reference(inner) | Type::MutableReference(inner) => {
                                     let ref_value: Reference = value.cast().map_err(|_err| {
                                         PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
@@ -624,7 +632,13 @@ impl Interpreter {
                             })?;
                             let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
                             Ok(value.as_move_value(&layout).decorate(&annotated_layout))
-                        }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect(),
+                        }).map(|v: Result<A::MoveValue, PartialVMError>|
+                            match v {
+                                Ok(val) => val,
+                                Err(e) => {
+                                    A::MoveValue::U8(0)
+                                }
+                            }).collect(),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
