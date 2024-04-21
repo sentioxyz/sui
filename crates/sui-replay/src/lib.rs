@@ -582,7 +582,7 @@ pub async fn execute_replay_command(
                 tx_digest,
                 safety,
                 use_authority,
-                Some(2),
+                Some(-1),
                 None,
                 None,
                 true,
