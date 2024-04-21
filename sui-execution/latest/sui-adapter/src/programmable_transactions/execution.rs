@@ -13,13 +13,7 @@ mod checked {
         file_format_common::VERSION_6,
         normalized, CompiledModule,
     };
-    use move_core_types::{
-        account_address::AccountAddress,
-        call_trace::CallTraces,
-        identifier::IdentStr,
-        language_storage::{ModuleId, TypeTag},
-        u256::U256,
-    };
+    use move_core_types::{account_address::AccountAddress, call_trace::CallTraces, ident_str, identifier::IdentStr, language_storage::{ModuleId, TypeTag}, u256::U256};
     use move_vm_runtime::{
         move_vm::MoveVM,
         session::{LoadedFunctionInstantiation, SerializedReturnValues},
@@ -31,6 +25,7 @@ mod checked {
         fmt,
         sync::Arc,
     };
+    use move_core_types::call_trace::{InputValue, InternalCallTrace};
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::storage::{get_package_objects, PackageObject};
@@ -39,7 +34,6 @@ mod checked {
             MoveObjectType, ObjectID, SuiAddress, TxContext, TxContextKind, RESOLVED_ASCII_STR,
             RESOLVED_STD_OPTION, RESOLVED_UTF8_STR, TX_CONTEXT_MODULE_NAME, TX_CONTEXT_STRUCT_NAME,
         },
-        coin::Coin,
         error::{command_argument_error, ExecutionError, ExecutionErrorKind},
         execution::{
             CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
@@ -66,6 +60,9 @@ mod checked {
 
     use crate::adapter::substitute_package_id;
     use crate::programmable_transactions::context::*;
+    use move_core_types::annotated_value as A;
+    use move_core_types::annotated_value::MoveStruct;
+    use sui_types::coin::Coin;
 
     pub fn execute<Mode: ExecutionMode>(
         protocol_config: &ProtocolConfig,
@@ -211,11 +208,68 @@ mod checked {
                     .collect::<Result<_, _>>()?;
                 let addr: SuiAddress =
                     context.by_value_arg(CommandKind::TransferObjects, objs.len(), addr_arg)?;
-                for obj in objs {
+                for obj in objs.clone() {
                     obj.ensure_public_transfer_eligible()?;
                     context.transfer_object(obj, addr)?;
                 }
-                (vec![], None)
+                if Mode::get_call_trace() {
+                    let mut call_traces = CallTraces::new();
+                    let mut inputs = vec![];
+                    for obj in objs {
+                        let input = match obj.contents {
+                            ObjectContents::Coin(coin) => {
+                                let tag = context
+                                    .vm
+                                    .get_runtime()
+                                    .get_type_tag(&obj.type_).unwrap();
+                                // if tag is a struct type tag
+                                if let TypeTag::Struct(struct_tag) = tag {
+                                    let move_value = A::MoveValue::Struct(
+                                        MoveStruct::new(
+                                            *struct_tag.clone(),
+                                            vec![
+                                                (
+                                                    ident_str!("id").to_owned(),
+                                                    A::MoveValue::Address(AccountAddress::from(
+                                                        coin.id.object_id().to_owned(),
+                                                    )),
+                                                ),
+                                                (
+                                                    ident_str!("balance").to_owned(),
+                                                    A::MoveValue::U64(coin.balance.value()),
+                                                ),
+                                            ],
+                                        ),
+                                    );
+                                    InputValue::MoveValue(move_value)
+                                } else {
+                                    InputValue::String(serde_json::to_string(&coin).unwrap())
+                                }
+                            }
+                            ObjectContents::Raw(raw) => {
+                                InputValue::String(serde_json::to_string(&raw).unwrap())
+                            }
+                        };
+
+                        inputs.push(input);
+                    }
+                    inputs.push(InputValue::MoveValue(A::MoveValue::Address(AccountAddress::from(addr))));
+                    let call_trace = InternalCallTrace {
+                        pc: 0,
+                        from_module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+                        module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+                        func_name: "transfer_objects".to_string(),
+                        inputs,
+                        outputs: vec![],
+                        type_args: vec![],
+                        sub_traces: CallTraces::new(),
+                        fdef_idx: 0,
+                    };
+                    call_traces.push(call_trace).expect("Failed to push call trace");
+                    (vec![], Some(call_traces))
+                } else {
+                    (vec![], None)
+                }
             }
             Command::SplitCoins(coin_arg, amount_args) => {
                 let mut obj: ObjectValue = context.borrow_arg_mut(0, coin_arg)?;
