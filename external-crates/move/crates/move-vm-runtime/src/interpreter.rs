@@ -380,12 +380,12 @@ impl Interpreter {
                     },
                     _ => (ty, value),
                 };
-                let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                let layout = loader.type_to_type_layout_type_args(ty, &ty_args).map_err(|_err| {
                     PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
                         "entry point functions cannot have non-serializable return types".to_string(),
                     )
                 })?;
-                let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout(ty)?;
+                let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
                 Ok(value.as_move_value(&layout).decorate(&annotated_layout))
             }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect(),
             outputs: vec![],
@@ -601,7 +601,6 @@ impl Interpreter {
                         &ty_args,
                         data_store,
                     )?;
-
                     call_traces.push(InternalCallTrace {
                         from_module_id: current_frame.function.module_id().to_string(),
                         pc: current_frame.pc,
@@ -625,12 +624,12 @@ impl Interpreter {
                                 },
                                 _ => (ty, value),
                             };
-                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                            let layout = loader.type_to_type_layout_type_args(ty, &ty_args).map_err(|_err| {
                                 PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
+                            let annotated_layout = resolver.type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
                             Ok(value.as_move_value(&layout).decorate(&annotated_layout))
                         }).map(|v: Result<A::MoveValue, PartialVMError>|
                             match v {
