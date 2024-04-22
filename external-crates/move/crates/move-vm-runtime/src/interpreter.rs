@@ -18,6 +18,7 @@ use move_core_types::{
     gas_algebra::{NumArgs, NumBytes},
     identifier::IdentStr,
     language_storage::TypeTag,
+    runtime_value::MoveValue,
     vm_status::{StatusCode, StatusType},
 };
 use move_vm_config::runtime::VMRuntimeLimitsConfig;
@@ -41,7 +42,6 @@ use smallvec::SmallVec;
 
 use crate::native_extensions::NativeContextExtensions;
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
-use move_core_types::call_trace::InputValue;
 use tracing::error;
 
 macro_rules! debug_write {
@@ -386,8 +386,8 @@ impl Interpreter {
                     )
                 })?;
                 let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout(ty)?;
-                Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-            }).map(|v: Result<InputValue, PartialVMError>| v.unwrap_or(InputValue::MoveValue(A::MoveValue::U8(0)))).collect(),
+                Ok(value.as_move_value(&layout).decorate(&annotated_layout))
+            }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect(),
             outputs: vec![],
             // TODO(pcxu): add type args
             type_args: current_frame.ty_args().into_iter().map(|ty| {
@@ -534,8 +534,8 @@ impl Interpreter {
                                 )
                             })?;
                             let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
-                            Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-                        }).map(|v: Result<InputValue, PartialVMError>| v.unwrap_or(InputValue::MoveValue(A::MoveValue::U8(0)))).collect(),
+                            Ok(value.as_move_value(&layout).decorate(&annotated_layout))
+                        }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
@@ -631,12 +631,12 @@ impl Interpreter {
                                 )
                             })?;
                             let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
-                            Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-                        }).map(|v: Result<InputValue, PartialVMError>|
+                            Ok(value.as_move_value(&layout).decorate(&annotated_layout))
+                        }).map(|v: Result<A::MoveValue, PartialVMError>|
                             match v {
                                 Ok(val) => val,
-                                Err(_) => {
-                                    InputValue::MoveValue(A::MoveValue::U8(0))
+                                Err(e) => {
+                                    A::MoveValue::U8(0)
                                 }
                             }).collect(),
                         outputs: vec![],
