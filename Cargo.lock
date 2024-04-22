@@ -11810,7 +11810,6 @@ dependencies = [
  "move-vm-types",
  "parking_lot 0.12.1",
  "serde",
- "serde_json",
  "sui-macros",
  "sui-move-natives-latest",
  "sui-protocol-config",

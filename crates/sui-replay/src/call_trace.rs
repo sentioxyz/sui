@@ -1,9 +1,8 @@
 use move_core_types::call_trace::InternalCallTrace;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sui_types::SUI_FRAMEWORK_ADDRESS;
 
-use crate::converter::{input_value_to_json, move_value_to_json};
+use crate::converter::move_value_to_json;
 
 /// A call trace with source
 ///
@@ -49,18 +48,18 @@ impl CallTraceWithSource {
         let to_module_name = split_to_module.next();
         CallTraceWithSource {
             from: account.unwrap().to_string(),
-            contract_name: module_name.unwrap_or(SUI_FRAMEWORK_ADDRESS.to_string().as_str()).to_string(),
+            contract_name: module_name.unwrap().to_string(),
             to: to_account.unwrap().to_string(),
             function_name: format!(
                 "{}::{}",
-                to_module_name.unwrap_or(SUI_FRAMEWORK_ADDRESS.to_string().as_str()).to_string(),
+                to_module_name.unwrap().to_string(),
                 call_trace.func_name
             ),
             inputs: call_trace
                 .inputs
                 .clone()
                 .into_iter()
-                .map(|i| input_value_to_json(i))
+                .map(|i| move_value_to_json(i))
                 .collect::<Vec<Value>>(),
             return_value: call_trace
                 .outputs
