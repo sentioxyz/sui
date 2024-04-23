@@ -40,7 +40,7 @@ impl CallTraceWithSource {
         }
     }
 
-    pub fn from(call_trace: InternalCallTrace) -> Self {
+    pub fn from(call_trace: InternalCallTrace, trace_v2: bool) -> Self {
         let mut split_module = call_trace.from_module_id.split("::");
         let account = split_module.next();
         let module_name = split_module.next();
@@ -60,13 +60,13 @@ impl CallTraceWithSource {
                 .inputs
                 .clone()
                 .into_iter()
-                .map(|i| input_value_to_json(i))
+                .map(|i| input_value_to_json(i, trace_v2))
                 .collect::<Vec<Value>>(),
             return_value: call_trace
                 .outputs
                 .clone()
                 .into_iter()
-                .map(|i| move_value_to_json(i))
+                .map(|i| move_value_to_json(i, trace_v2))
                 .collect::<Vec<Value>>(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace
@@ -74,7 +74,7 @@ impl CallTraceWithSource {
                 .clone()
                 .0
                 .into_iter()
-                .map(|sub_trace| CallTraceWithSource::from(sub_trace))
+                .map(|sub_trace| CallTraceWithSource::from(sub_trace, trace_v2))
                 .collect(),
             location: None,
             pc: call_trace.pc

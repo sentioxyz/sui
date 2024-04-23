@@ -33,7 +33,9 @@ async fn main() {
     // build our application with a single route
     println!("listening on http://localhost:{}", DEFAULT_PORT);
 
-    let app = Router::new().route("/call_trace/by_tx_digest/:hash", get(call_trace).with_state(config.clone()));
+    let app = Router::new()
+        .route("/call_trace/by_tx_digest/:hash", get(call_trace).with_state(config.clone()))
+        .route("/call_trace/v2/by_tx_digest/:hash", get(call_trace).with_state(config.clone()));
 
     axum::Server::bind(&format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
         .serve(app.into_make_service())
@@ -49,7 +51,32 @@ async fn call_trace(
         tx_digest,
         false,
         false,
-        None
+        None,
+        false
+    ).await;
+    return match trace_result {
+        Ok(res) => {
+            Ok(Json(res))
+        }
+        Err(err) => {
+            Err(MyError::SomethingWentWrong {
+                message: format!("{:?}", err),
+            })
+        }
+    }
+}
+
+async fn call_trace_v2(
+    extract::Path(tx_digest): extract::Path<String>,
+    State(config): State<AppConfig>,
+) -> Result<Json<Option<Vec<CallTraceWithSource>>>, MyError> {
+    let trace_result = sui_replay::execute_call_trace(
+        Some(config.rpc_url),
+        tx_digest,
+        false,
+        false,
+        None,
+        true
     ).await;
     return match trace_result {
         Ok(res) => {

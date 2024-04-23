@@ -386,7 +386,6 @@ impl Interpreter {
                     )
                 })?;
                 let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
-                let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout(ty)?;
                 Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
             }).map(|v: Result<InputValue, PartialVMError>| v.unwrap_or(InputValue::MoveValue(A::MoveValue::U8(0)))).collect(),
             outputs: vec![],

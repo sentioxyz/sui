@@ -250,6 +250,7 @@ pub struct LocalExec {
     pub num_retries_for_timeout: u32,
     pub sleep_period_for_timeout: std::time::Duration,
     pub enable_trace: bool,
+    pub enable_trace_v2: bool,
 }
 
 impl LocalExec {
@@ -332,6 +333,7 @@ impl LocalExec {
         protocol_version: Option<i64>,
         enable_profiler: Option<PathBuf>,
         enable_trace: bool,
+        enable_trace_v2: bool,
     ) -> Result<ExecutionSandboxState, ReplayEngineError> {
         async fn inner_exec(
             rpc_url: String,
@@ -342,6 +344,7 @@ impl LocalExec {
             protocol_version: Option<i64>,
             enable_profiler: Option<PathBuf>,
             enable_trace: bool,
+            enable_trace_v2: bool,
         ) -> Result<ExecutionSandboxState, ReplayEngineError> {
             LocalExec::new_from_fn_url(&rpc_url)
                 .await?
@@ -355,6 +358,7 @@ impl LocalExec {
                     protocol_version,
                     enable_profiler,
                     enable_trace,
+                    enable_trace_v2,
                 )
                 .await
         }
@@ -370,6 +374,7 @@ impl LocalExec {
                 protocol_version,
                 enable_profiler,
                 enable_trace,
+                enable_trace_v2,
             )
             .await
             {
@@ -398,6 +403,7 @@ impl LocalExec {
                 protocol_version,
                 enable_profiler.clone(),
                 enable_trace,
+                enable_trace_v2,
             )
             .await
             {
@@ -459,6 +465,7 @@ impl LocalExec {
             protocol_version: None,
             enable_profiler: None,
             enable_trace: false,
+            enable_trace_v2: false,
         })
     }
 
@@ -503,6 +510,7 @@ impl LocalExec {
             protocol_version: None,
             enable_profiler: None,
             enable_trace: false,
+            enable_trace_v2: false,
         })
     }
 
@@ -727,6 +735,7 @@ impl LocalExec {
                     None,
                     None,
                     false,
+                    false,
                 )
                 .await
                 .map(|q| q.check_effects())
@@ -905,7 +914,7 @@ impl LocalExec {
                 Some(trace_result) => Some(
                     trace_result.unwrap().0
                         .into_iter()
-                        .map(|c| CallTraceWithSource::from(c))
+                        .map(|c| CallTraceWithSource::from(c, self.enable_trace_v2))
                         .collect(),
                 ),
                 None => None,
@@ -1123,11 +1132,13 @@ impl LocalExec {
         protocol_version: Option<i64>,
         enable_profiler: Option<PathBuf>,
         enable_trace: bool,
+        enable_trace_v2: bool,
     ) -> Result<ExecutionSandboxState, ReplayEngineError> {
         self.executor_version = executor_version;
         self.protocol_version = protocol_version;
         self.enable_profiler = enable_profiler;
         self.enable_trace = enable_trace;
+        self.enable_trace_v2 = enable_trace_v2;
         if use_authority {
             self.certificate_execute(tx_digest, expensive_safety_check_config.clone())
                 .await

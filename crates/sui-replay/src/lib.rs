@@ -211,6 +211,7 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 false,
+                false,
             )
             .await?;
 
@@ -294,6 +295,7 @@ pub async fn execute_replay_command(
                             None,
                             None,
                             None,
+                            false,
                             false,
                         )
                         .await?;
@@ -398,6 +400,7 @@ pub async fn execute_replay_command(
                 protocol_version,
                 output_path,
                 false,
+                false,
             )
             .await?;
 
@@ -423,6 +426,7 @@ pub async fn execute_replay_command(
                 executor_version,
                 protocol_version,
                 None,
+                false,
                 false,
             )
             .await?;
@@ -609,6 +613,7 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 true,
+                true,
             )
             .await?;
             match sandbox_state.trace_results {
@@ -643,6 +648,7 @@ pub async fn execute_call_trace(
     safety_checks: bool,
     use_authority: bool,
     cfg_path: Option<PathBuf>,
+    v2: bool,
 ) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
     let safety = if safety_checks {
         ExpensiveSafetyCheckConfig::new_enable_all()
@@ -661,6 +667,7 @@ pub async fn execute_call_trace(
         None,
         None,
         true,
+        v2,
     ).await?;
     Ok(sandbox_state.trace_results)
 }
