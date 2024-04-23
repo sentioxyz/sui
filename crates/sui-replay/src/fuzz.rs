@@ -76,6 +76,7 @@ impl ReplayFuzzer {
                 None,
                 None,
                 false,
+                false,
             )
             .await?;
 

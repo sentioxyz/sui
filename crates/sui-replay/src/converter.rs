@@ -4,14 +4,14 @@ use serde_json::{Map, Value};
 use move_core_types::annotated_value as A;
 use move_core_types::call_trace::InputValue;
 
-pub fn input_value_to_json(val: InputValue) -> Value {
+pub fn input_value_to_json(val: InputValue, trace_v2: bool) -> Value {
     match val {
-        InputValue::MoveValue(mv) => move_value_to_json(mv),
+        InputValue::MoveValue(mv) => move_value_to_json(mv, trace_v2),
         InputValue::String(s) => Value::String(s)
     }
 }
 
-pub fn move_value_to_json(val: A::MoveValue) -> Value {
+pub fn move_value_to_json(val: A::MoveValue, trace_v2: bool) -> Value {
     match val {
         A::MoveValue::U8(n) => serde_json::to_value(n).unwrap(),
         A::MoveValue::U64(n) => serde_json::to_value(n.to_string()).unwrap(),
@@ -24,13 +24,16 @@ pub fn move_value_to_json(val: A::MoveValue) -> Value {
                 let bytes = vec_to_vec_u8(vals).unwrap();
                 serde_json::to_value(format!("0x{}", hex::encode(&bytes))).unwrap()
             } else {
-                Value::Array(vals.into_iter().map(|v| move_value_to_json(v)).collect())
+                Value::Array(vals.into_iter().map(|v| move_value_to_json(v, trace_v2)).collect())
             }
         }
         A::MoveValue::Struct(move_struct) => {
+            if !trace_v2 {
+                return struct_fields_to_json(move_struct.fields, trace_v2);
+            }
             let mut map = Map::new();
             map.insert("type".to_string(), serde_json::to_value(move_struct.type_).unwrap());
-            map.insert("fields".to_string(), struct_fields_to_json(move_struct.fields));
+            map.insert("fields".to_string(), struct_fields_to_json(move_struct.fields, trace_v2));
             Value::Object(map)
         },
         A::MoveValue::Signer(add) => serde_json::to_value(add).unwrap(),
@@ -40,11 +43,11 @@ pub fn move_value_to_json(val: A::MoveValue) -> Value {
     }
 }
 
-fn struct_fields_to_json(fields: Vec<(Identifier, A::MoveValue)>) -> Value {
+fn struct_fields_to_json(fields: Vec<(Identifier, A::MoveValue)>, trace_v2: bool) -> Value {
     let mut iter = fields.into_iter();
     let mut map = Map::new();
     while let Some((field_name, field_value)) = iter.next() {
-        map.insert(field_name.into_string(), move_value_to_json(field_value));
+        map.insert(field_name.into_string(), move_value_to_json(field_value, trace_v2));
     }
     Value::Object(map)
 }
