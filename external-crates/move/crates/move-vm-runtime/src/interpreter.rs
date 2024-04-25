@@ -437,6 +437,10 @@ impl Interpreter {
                     call_traces.set_outputs(
                         outputs.into_iter().zip(&loaded_func.return_).map(|(value, ty)| {
                             let (ty, value) = match ty {
+                                Type::TyParam(idx) => {
+                                    let ty = &current_frame.ty_args()[*idx as usize];
+                                    (ty, value)
+                                },
                                 Type::Reference(inner) | Type::MutableReference(inner) => {
                                     let ref_value: Reference = value.cast().map_err(|_err| {
                                         PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
@@ -448,12 +452,12 @@ impl Interpreter {
                                 },
                                 _ => (ty, value),
                             };
-                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                            let layout = loader.type_to_type_layout_type_args(ty, &current_frame.ty_args()).map_err(|_err| {
                                 PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
+                            let annotated_layout = resolver.type_to_fully_annotated_layout_type_args(ty, &current_frame.ty_args())?;
                             Ok(value.as_move_value(&layout).decorate(&annotated_layout))
                         }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect());
 
