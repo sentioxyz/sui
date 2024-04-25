@@ -1537,7 +1537,7 @@ impl<'a> Resolver<'a> {
     pub(crate) fn type_to_fully_annotated_layout_type_args(
         &self,
         ty: &Type,
-        ty_args: &Vec<Type>,
+        ty_args: &[Type],
     ) -> PartialVMResult<A::MoveTypeLayout> {
         self.loader.type_to_fully_annotated_layout_type_args(ty, ty_args)
     }
@@ -2322,7 +2322,7 @@ impl Loader {
         ty: &Type,
         count: &mut u64,
         depth: u64,
-        ty_args: &Vec<Type>
+        ty_args: &[Type]
     ) -> PartialVMResult<R::MoveTypeLayout> {
         if *count > MAX_TYPE_TO_LAYOUT_NODES {
             return Err(PartialVMError::new(StatusCode::TOO_MANY_TYPE_NODES));
@@ -2472,7 +2472,7 @@ impl Loader {
         ty: &Type,
         count: &mut u64,
         depth: u64,
-        ty_args : &Vec<Type>,
+        ty_args : &[Type],
     ) -> PartialVMResult<A::MoveTypeLayout> {
         if *count > MAX_TYPE_TO_LAYOUT_NODES {
             return Err(PartialVMError::new(StatusCode::TOO_MANY_TYPE_NODES));
@@ -2530,7 +2530,7 @@ impl Loader {
         self.type_to_type_layout_impl(ty, &mut count, 1)
     }
 
-    pub(crate) fn type_to_type_layout_type_args(&self, ty: &Type, ty_args: &Vec<Type>) -> PartialVMResult<R::MoveTypeLayout> {
+    pub(crate) fn type_to_type_layout_type_args(&self, ty: &Type, ty_args:  &[Type]) -> PartialVMResult<R::MoveTypeLayout> {
         let mut count = 0;
         self.type_to_type_layout_type_args_impl(ty, &mut count, 1, ty_args)
     }
@@ -2546,7 +2546,7 @@ impl Loader {
     pub(crate) fn type_to_fully_annotated_layout_type_args(
         &self,
         ty: &Type,
-        ty_args: &Vec<Type>,
+        ty_args: &[Type],
     ) -> PartialVMResult<A::MoveTypeLayout> {
         let mut count = 0;
         self.type_to_fully_annotated_layout_type_args_impl(ty, &mut count, 1, ty_args)
