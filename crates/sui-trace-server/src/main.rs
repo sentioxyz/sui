@@ -52,7 +52,7 @@ async fn call_trace(
         false,
         false,
         None,
-        false
+        None,
     ).await;
     return match trace_result {
         Ok(res) => {
@@ -76,7 +76,7 @@ async fn call_trace_v2(
         false,
         false,
         None,
-        true
+        None,
     ).await;
     return match trace_result {
         Ok(res) => {

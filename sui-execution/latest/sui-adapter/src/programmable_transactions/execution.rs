@@ -28,6 +28,7 @@ mod checked {
     use move_core_types::call_trace::{InputValue, InternalCallTrace};
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
+    use sui_types::execution_config_utils::to_binary_config;
     use sui_types::storage::{get_package_objects, PackageObject};
     use sui_types::{
         base_types::{

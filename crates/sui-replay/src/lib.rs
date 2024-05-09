@@ -7,12 +7,14 @@ use config::ReplayableNetworkConfigSet;
 use fuzz::ReplayFuzzer;
 use fuzz::ReplayFuzzerConfig;
 use fuzz_mutations::base_fuzzers;
+use std::cmp::max;
 use sui_types::digests::get_mainnet_chain_identifier;
 use sui_types::digests::get_testnet_chain_identifier;
 use sui_types::message_envelope::Message;
 use tracing::warn;
 use transaction_provider::{FuzzStartPoint, TransactionSource};
 
+use crate::config::get_rpc_url;
 use crate::replay::ExecutionSandboxState;
 use crate::replay::LocalExec;
 use crate::replay::ProtocolVersionSummary;
@@ -28,6 +30,7 @@ use tracing::{error, info};
 use crate::call_trace::CallTraceWithSource;
 use crate::types::ReplayEngineError;
 
+pub mod batch_replay;
 pub mod call_trace;
 pub mod config;
 mod converter;
@@ -109,8 +112,19 @@ pub enum ReplayToolCommand {
         path: PathBuf,
         #[arg(long, short)]
         terminate_early: bool,
-        #[arg(long, short, default_value = "16")]
-        batch_size: u64,
+        #[arg(
+        long,
+        short,
+        default_value = "16",
+        help = "Number of tasks to run in parallel"
+        )]
+        num_tasks: u64,
+        #[arg(
+        long,
+        help = "If provided, dump the state of the execution to a file in the given directory. \
+            This will allow faster replay next time."
+        )]
+        persist_path: Option<PathBuf>,
     },
 
     /// Replay a transaction from a node state dump
@@ -173,6 +187,7 @@ pub async fn execute_replay_command(
     safety_checks: bool,
     use_authority: bool,
     cfg_path: Option<PathBuf>,
+    chain: Option<String>,
     cmd: ReplayToolCommand,
 ) -> anyhow::Result<Option<(u64, u64)>> {
     let safety = if safety_checks {
@@ -187,7 +202,6 @@ pub async fn execute_replay_command(
             info!("Executing tx: {}", sandbox_state.transaction_info.tx_digest);
             let sandbox_state = LocalExec::certificate_execute_with_sandbox_state(
                 &sandbox_state,
-                None,
                 &sandbox_state.pre_exec_diag,
             )
             .await?;
@@ -202,14 +216,14 @@ pub async fn execute_replay_command(
             let tx_digest = TransactionDigest::from_str(&tx_digest)?;
             info!("Executing tx: {}", tx_digest);
             let sandbox_state = LocalExec::replay_with_network_config(
-                rpc_url,
-                cfg_path.map(|p| p.to_str().unwrap().to_string()),
+                get_rpc_url(rpc_url, cfg_path, chain)?,
                 tx_digest,
                 safety,
                 use_authority,
                 None,
                 None,
                 None,
+                false,
                 false,
             )
             .await?;
@@ -268,67 +282,27 @@ pub async fn execute_replay_command(
         ReplayToolCommand::ReplayBatch {
             path,
             terminate_early,
-            batch_size,
+            num_tasks,
+            persist_path,
         } => {
             let file = std::fs::File::open(path).unwrap();
-            let reader = std::io::BufReader::new(file);
-
-            let mut chunk = Vec::new();
-            for tx_digest in reader.lines() {
-                chunk.push(
-                    match TransactionDigest::from_str(&tx_digest.expect("Unable to readline")) {
-                        Ok(digest) => digest,
-                        Err(e) => {
-                            panic!("Error parsing tx digest: {:?}", e);
-                        }
-                    },
-                );
-                if chunk.len() == batch_size as usize {
-                    println!("Executing batch: {:?}", chunk);
-                    // execute all in chunk
-                    match exec_batch(
-                        rpc_url.clone(),
-                        safety.clone(),
-                        use_authority,
-                        cfg_path.clone(),
-                        &chunk,
-                    )
-                    .await
-                    {
-                        Ok(_) => info!("Batch executed successfully: {:?}", chunk),
-                        Err(e) => {
-                            error!("Error executing batch: {:?}", e);
-                            if terminate_early {
-                                return Err(e);
-                            }
-                        }
-                    }
-                    println!("Finished batch execution");
-
-                    chunk.clear();
-                }
-            }
-            if !chunk.is_empty() {
-                println!("Executing batch: {:?}", chunk);
-                match exec_batch(
-                    rpc_url.clone(),
-                    safety,
-                    use_authority,
-                    cfg_path.clone(),
-                    &chunk,
-                )
-                .await
-                {
-                    Ok(_) => info!("Batch executed successfully: {:?}", chunk),
-                    Err(e) => {
-                        error!("Error executing batch: {:?}", e);
-                        if terminate_early {
-                            return Err(e);
-                        }
-                    }
-                }
-                println!("Finished batch execution");
-            }
+            let buf_reader = std::io::BufReader::new(file);
+            let digests = buf_reader.lines().map(|line| {
+                let line = line.unwrap();
+                TransactionDigest::from_str(&line).unwrap_or_else(|err| {
+                    panic!("Error parsing tx digest {:?}: {:?}", line, err);
+                })
+            });
+            batch_replay::batch_replay(
+                digests,
+                num_tasks,
+                get_rpc_url(rpc_url, cfg_path, chain)?,
+                safety,
+                use_authority,
+                terminate_early,
+                persist_path,
+            )
+                .await;
 
             // TODO: clean this up
             Some((0u64, 0u64))
@@ -344,14 +318,14 @@ pub async fn execute_replay_command(
             let tx_digest = TransactionDigest::from_str(&tx_digest)?;
             info!("Executing tx: {}", tx_digest);
             let _sandbox_state = LocalExec::replay_with_network_config(
-                rpc_url,
-                cfg_path.map(|p| p.to_str().unwrap().to_string()),
+                get_rpc_url(rpc_url, cfg_path, chain)?,
                 tx_digest,
                 safety,
                 use_authority,
-                executor_version,
-                protocol_version,
-                output_path,
+                None,
+                None,
+                None,
+                false,
                 false,
             )
             .await?;
@@ -370,14 +344,14 @@ pub async fn execute_replay_command(
             let tx_digest = TransactionDigest::from_str(&tx_digest)?;
             info!("Executing tx: {}", tx_digest);
             let sandbox_state = LocalExec::replay_with_network_config(
-                rpc_url,
-                cfg_path.map(|p| p.to_str().unwrap().to_string()),
+                get_rpc_url(rpc_url, cfg_path, chain)?,
                 tx_digest,
                 safety,
                 use_authority,
-                executor_version,
-                protocol_version,
                 None,
+                None,
+                None,
+                false,
                 false,
             )
             .await?;
@@ -525,6 +499,7 @@ pub async fn execute_replay_command(
                 safety_checks,
                 use_authority,
                 cfg_path,
+                chain,
                 ReplayToolCommand::ReplayCheckpoints {
                     start,
                     end,
@@ -532,7 +507,7 @@ pub async fn execute_replay_command(
                     max_tasks,
                 },
             )
-            .await;
+                .await;
             match status {
                 Ok(Some((succeeded, total))) => {
                     info!(
@@ -555,14 +530,14 @@ pub async fn execute_replay_command(
             let tx_digest = TransactionDigest::from_str(&tx_digest)?;
             info!("Tracing tx: {}", tx_digest);
             let sandbox_state = LocalExec::replay_with_network_config(
-                rpc_url,
-                cfg_path.map(|p| p.to_str().unwrap().to_string()),
+                get_rpc_url(rpc_url, cfg_path, chain)?,
                 tx_digest,
                 safety,
                 use_authority,
-                Some(-1),
                 None,
                 None,
+                None,
+                true,
                 true,
             )
             .await?;
@@ -598,6 +573,7 @@ pub async fn execute_call_trace(
     safety_checks: bool,
     use_authority: bool,
     cfg_path: Option<PathBuf>,
+    chain: Option<String>,
 ) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
     let safety = if safety_checks {
         ExpensiveSafetyCheckConfig::new_enable_all()
@@ -607,14 +583,14 @@ pub async fn execute_call_trace(
     let tx_digest = TransactionDigest::from_str(&tx_digest)?;
     info!("Tracing tx: {}", tx_digest);
     let sandbox_state = LocalExec::replay_with_network_config(
-        rpc_url,
-        cfg_path.map(|p| p.to_str().unwrap().to_string()),
+        get_rpc_url(rpc_url, cfg_path, chain)?,
         tx_digest,
         safety,
         use_authority,
         Some(-1),
         None,
         None,
+        true,
         true,
     ).await?;
     Ok(sandbox_state.trace_results)

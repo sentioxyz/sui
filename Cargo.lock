@@ -14051,16 +14051,16 @@ dependencies = [
 
 [[package]]
 name = "sui-trace-server"
-version = "1.23.0"
+version = "1.25.0"
 dependencies = [
  "anyhow",
  "axum",
- "mysten-metrics 0.7.0",
+ "mysten-metrics",
  "prometheus",
  "serde",
  "serde_json",
  "sui-replay",
- "telemetry-subscribers 0.2.0",
+ "telemetry-subscribers",
  "tokio",
  "tower",
  "tracing",
