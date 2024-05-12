@@ -4411,6 +4411,50 @@ impl AuthorityState {
     }
 
     #[instrument(level = "debug", skip_all)]
+    fn create_bridge_tx(
+        &self,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> Option<EndOfEpochTransactionKind> {
+        if !epoch_store.protocol_config().enable_bridge() {
+            info!("bridge not enabled");
+            return None;
+        }
+        if epoch_store.bridge_exists() {
+            return None;
+        }
+        let tx = EndOfEpochTransactionKind::new_bridge_create(epoch_store.get_chain_identifier());
+        info!("Creating Bridge Create tx");
+        Some(tx)
+    }
+
+    #[instrument(level = "debug", skip_all)]
+    fn init_bridge_committee_tx(
+        &self,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> Option<EndOfEpochTransactionKind> {
+        if !epoch_store.protocol_config().enable_bridge() {
+            info!("bridge not enabled");
+            return None;
+        }
+        // Only create this transaction if bridge exists
+        if !epoch_store.bridge_exists() {
+            return None;
+        }
+
+        if epoch_store.bridge_committee_initiated() {
+            return None;
+        }
+
+        let bridge_initial_shared_version = epoch_store
+            .epoch_start_config()
+            .bridge_obj_initial_shared_version()
+            .expect("initial version must exist");
+        let tx = EndOfEpochTransactionKind::init_bridge_committee(bridge_initial_shared_version);
+        info!("Init Bridge committee tx");
+        Some(tx)
+    }
+
+    #[instrument(level = "debug", skip_all)]
     fn create_deny_list_state_tx(
         &self,
         epoch_store: &Arc<AuthorityPerEpochStore>,
@@ -4452,6 +4496,12 @@ impl AuthorityState {
             txns.push(tx);
         }
         if let Some(tx) = self.create_randomness_state_tx(epoch_store) {
+            txns.push(tx);
+        }
+        if let Some(tx) = self.create_bridge_tx(epoch_store) {
+            txns.push(tx);
+        }
+        if let Some(tx) = self.init_bridge_committee_tx(epoch_store) {
             txns.push(tx);
         }
         if let Some(tx) = self.create_deny_list_state_tx(epoch_store) {
@@ -4804,13 +4854,21 @@ impl RandomnessRoundReceiver {
             // Wait for transaction execution in a separate task, to avoid deadlock in case of
             // out-of-order randomness generation. (Each RandomnessStateUpdate depends on the
             // output of the RandomnessStateUpdate from the previous round.)
-            let Ok(mut effects) = authority_state
-                .execution_cache
-                .notify_read_executed_effects(&[digest])
-                .await
-            else {
+            //
+            // We set a very long timeout so that in case this gets stuck for some reason, the
+            // validator will eventually crash rather than continuing in a zombie mode.
+            const RANDOMNESS_STATE_UPDATE_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
+            let Ok(mut effects) = tokio::time::timeout(
+                RANDOMNESS_STATE_UPDATE_EXECUTION_TIMEOUT,
+                authority_state
+                    .execution_cache
+                    .notify_read_executed_effects(&[digest]),
+            )
+            .await
+            .expect("randomness state update transaction execution timed out") else {
                 panic!("failed to get effects for randomness state update transaction at epoch {epoch}, round {round}");
             };
+
             let effects = effects.pop().expect("should return effects");
             if *effects.status() != ExecutionStatus::Success {
                 panic!("failed to execute randomness state update transaction at epoch {epoch}, round {round}: {effects:?}");

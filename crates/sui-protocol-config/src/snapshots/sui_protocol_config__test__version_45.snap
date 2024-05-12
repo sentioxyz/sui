@@ -33,6 +33,7 @@ feature_flags:
   loaded_child_object_format_type: true
   receive_objects: true
   random_beacon: true
+  bridge: true
   enable_effects_v2: true
   narwhal_certificate_v2: true
   verify_legacy_zklogin_address: true
@@ -49,6 +50,7 @@ feature_flags:
   consensus_choice: SwapEachEpoch
   consensus_network: Tonic
   zklogin_max_epoch_upper_bound_delta: 30
+  mysticeti_leader_scoring_and_schedule: true
 max_tx_size_bytes: 131072
 max_input_objects: 2048
 max_size_written_objects: 5000000

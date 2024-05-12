@@ -1,5 +1,19 @@
 # @mysten/zksend
 
+## 0.8.0
+
+### Minor Changes
+
+- 807262f394: Update zkSend Wallet references to Stashed.
+
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [99b112178c]
+  - @mysten/sui.js@0.54.1
+  - @mysten/wallet-standard@0.11.6
+
 ## 0.7.1
 
 ### Patch Changes

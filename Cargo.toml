@@ -199,7 +199,7 @@ members = [
 
 [workspace.package]
 # This version string will be inherited by sui-core, sui-faucet, sui-node, sui-tools, sui-sdk, sui-move-build, and sui crates.
-version = "1.25.0"
+version = "1.26.0"
 
 [profile.release]
 # debug = 1 means line charts only, which is minimum needed for good stack traces
@@ -591,6 +591,7 @@ sui-analytics-indexer-derive = { path = "crates/sui-analytics-indexer-derive" }
 sui-archival = { path = "crates/sui-archival" }
 sui-authority-aggregation = { path = "crates/sui-authority-aggregation" }
 sui-benchmark = { path = "crates/sui-benchmark" }
+sui-bridge = { path = "crates/sui-bridge" }
 sui-cluster-test = { path = "crates/sui-cluster-test" }
 sui-common = { path = "crates/sui-common" }
 sui-config = { path = "crates/sui-config" }

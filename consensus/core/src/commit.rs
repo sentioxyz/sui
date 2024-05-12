@@ -294,6 +294,9 @@ pub struct CommittedSubDag {
     /// First commit after genesis has a index of 1, then every next commit has a
     /// index incremented by 1.
     pub commit_index: CommitIndex,
+    /// Optional scores that are provided as part of the consensus output to Sui
+    /// that can then be used by Sui for future submission to consensus.
+    pub reputation_scores: Vec<(AuthorityIndex, u64)>,
 }
 
 impl CommittedSubDag {
@@ -309,7 +312,12 @@ impl CommittedSubDag {
             blocks,
             timestamp_ms,
             commit_index,
+            reputation_scores: vec![],
         }
+    }
+
+    pub fn update_scores(&mut self, scores: Vec<(AuthorityIndex, u64)>) {
+        self.reputation_scores = scores;
     }
 
     /// Sort the blocks of the sub-dag by round number then authority index. Any
@@ -500,8 +508,6 @@ impl CommitInfo {
 
 /// CommitRange stores a range of CommitIndex. The range contains the start (inclusive)
 /// and end (exclusive) commit indices and can be ordered for use as the key of a table.
-/// Note: If used as a key for a table it is useful to ensure the key ranges don't
-/// intersect using the provided helper methods so that ordering becomes clear.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CommitRange(Range<CommitIndex>);
 
@@ -559,8 +565,8 @@ mod tests {
         storage::{mem_store::MemStore, WriteBatch},
     };
 
-    #[test]
-    fn test_new_subdag_from_commit() {
+    #[tokio::test]
+    async fn test_new_subdag_from_commit() {
         let store = Arc::new(MemStore::new());
         let context = Arc::new(Context::new_for_test(4).0);
         let wave_length = DEFAULT_WAVE_LENGTH;
@@ -632,8 +638,8 @@ mod tests {
         assert_eq!(subdag.commit_index, commit_index);
     }
 
-    #[test]
-    fn test_commit_range() {
+    #[tokio::test]
+    async fn test_commit_range() {
         let range1 = CommitRange::new(1..6);
         let range2 = CommitRange::new(2..6);
         let range3 = CommitRange::new(5..10);
@@ -653,5 +659,6 @@ mod tests {
         assert!(range1 < range2);
         assert!(range2 < range3);
         assert!(range3 < range4);
+        assert!(range5 < range4);
     }
 }

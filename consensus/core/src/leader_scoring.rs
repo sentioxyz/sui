@@ -14,15 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     block::{BlockAPI, BlockDigest, BlockRef, Slot, VerifiedBlock},
-    commit::CommitRange,
+    commit::{CommitRange, CommittedSubDag},
     context::Context,
     leader_scoring_strategy::ScoringStrategy,
     stake_aggregator::{QuorumThreshold, StakeAggregator},
     universal_committer::UniversalCommitter,
-    CommittedSubDag, Round,
+    Round,
 };
 
-#[allow(unused)]
 pub(crate) struct ReputationScoreCalculator<'a> {
     // The range of commits that these scores are calculated from.
     pub(crate) commit_range: CommitRange,
@@ -38,19 +37,18 @@ pub(crate) struct ReputationScoreCalculator<'a> {
     // and the `ReputationScoreCalculator` is responsible for applying the strategy.
     // For now this is dynamic while we are experimenting but eventually we can
     // replace this with the final strategy that works best.
-    scoring_strategy: Box<dyn ScoringStrategy>,
+    scoring_strategy: &'a dyn ScoringStrategy,
     // We use the `UniversalCommitter` to elect the leaders from the `UnscoredSubdag`
     // that need to be scored.
     committer: &'a UniversalCommitter,
 }
 
-#[allow(unused)]
 impl<'a> ReputationScoreCalculator<'a> {
     pub(crate) fn new(
         context: Arc<Context>,
         committer: &'a UniversalCommitter,
         unscored_subdags: &Vec<CommittedSubDag>,
-        scoring_strategy: Box<dyn ScoringStrategy>,
+        scoring_strategy: &'a dyn ScoringStrategy,
     ) -> Self {
         let num_authorities = context.committee.size();
         let scores_per_authority = vec![0_u64; num_authorities];
@@ -80,11 +78,11 @@ impl<'a> ReputationScoreCalculator<'a> {
 
         for leader_round in scoring_round_range {
             for committer in self.committer.get_committers() {
-                tracing::info!(
+                tracing::trace!(
                     "Electing leader for round {leader_round} with committer {committer}"
                 );
                 if let Some(leader_slot) = committer.elect_leader(leader_round) {
-                    tracing::info!("Calculating score for leader {leader_slot}");
+                    tracing::trace!("Calculating score for leader {leader_slot}");
                     self.add_scores(self.scoring_strategy.calculate_scores_for_leader(
                         &self.unscored_subdag,
                         leader_slot,
@@ -114,7 +112,6 @@ pub(crate) struct ReputationScores {
     pub(crate) commit_range: CommitRange,
 }
 
-#[allow(unused)]
 impl ReputationScores {
     pub(crate) fn new(commit_range: CommitRange, scores_per_authority: Vec<u64>) -> Self {
         Self {
@@ -266,7 +263,7 @@ impl UnscoredSubdag {
                 }
             } else {
                 // TODO: Add unit test for this case once dagbuilder is ready.
-                tracing::info!(
+                tracing::trace!(
                     "Potential vote's ancestor block not found in unscored committed subdags: {:?}",
                     ancestor
                 );
@@ -369,10 +366,10 @@ mod tests {
         universal_committer::universal_committer_builder::UniversalCommitterBuilder,
     };
 
-    #[test]
-    fn test_reputation_scores_authorities_by_score_desc() {
+    #[tokio::test]
+    async fn test_reputation_scores_authorities_by_score_desc() {
         let context = Arc::new(Context::new_for_test(4).0);
-        let scores = ReputationScores::new(CommitRange::new(1..300), vec![4, 1, 1, 3]);
+        let scores = ReputationScores::new((1..300).into(), vec![4, 1, 1, 3]);
         let authorities = scores.authorities_by_score_desc(context);
         assert_eq!(
             authorities,
@@ -385,10 +382,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_reputation_scores_update_metrics() {
+    #[tokio::test]
+    async fn test_reputation_scores_update_metrics() {
         let context = Arc::new(Context::new_for_test(4).0);
-        let scores = ReputationScores::new(CommitRange::new(1..300), vec![1, 2, 4, 3]);
+        let scores = ReputationScores::new((1..300).into(), vec![1, 2, 4, 3]);
         scores.update_metrics(context.clone());
         let metrics = context.metrics.node_metrics.reputation_scores.clone();
         assert_eq!(
@@ -421,8 +418,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_reputation_score_calculator() {
+    #[tokio::test]
+    async fn test_reputation_score_calculator() {
         telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = Arc::new(LeaderSchedule::new(
@@ -493,20 +490,21 @@ mod tests {
             context.clock.timestamp_utc_ms(),
             commit_index,
         )];
+        let scoring_strategy = VoteScoringStrategy {};
         let mut calculator = ReputationScoreCalculator::new(
             context.clone(),
             &committer,
             &unscored_subdags,
-            Box::new(VoteScoringStrategy {}),
+            &scoring_strategy,
         );
         let scores = calculator.calculate();
         assert_eq!(scores.scores_per_authority, vec![3, 2, 2, 2]);
-        assert_eq!(scores.commit_range, CommitRange::new(1..2));
+        assert_eq!(scores.commit_range, (1..2).into());
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "Attempted to calculate scores with no unscored subdags")]
-    fn test_reputation_score_calculator_no_subdags() {
+    async fn test_reputation_score_calculator_no_subdags() {
         telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = Arc::new(LeaderSchedule::new(
@@ -526,18 +524,19 @@ mod tests {
         .build();
 
         let unscored_subdags = vec![];
+        let scoring_strategy = VoteScoringStrategy {};
         let mut calculator = ReputationScoreCalculator::new(
             context.clone(),
             &committer,
             &unscored_subdags,
-            Box::new(VoteScoringStrategy {}),
+            &scoring_strategy,
         );
         calculator.calculate();
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "Attempted to create UnscoredSubdag with no blocks")]
-    fn test_reputation_score_calculator_no_subdag_blocks() {
+    async fn test_reputation_score_calculator_no_subdag_blocks() {
         telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = Arc::new(LeaderSchedule::new(
@@ -563,17 +562,18 @@ mod tests {
             context.clock.timestamp_utc_ms(),
             1,
         )];
+        let scoring_strategy = VoteScoringStrategy {};
         let mut calculator = ReputationScoreCalculator::new(
             context.clone(),
             &committer,
             &unscored_subdags,
-            Box::new(VoteScoringStrategy {}),
+            &scoring_strategy,
         );
         calculator.calculate();
     }
 
-    #[test]
-    fn test_scoring_with_missing_block_in_subdag() {
+    #[tokio::test]
+    async fn test_scoring_with_missing_block_in_subdag() {
         telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = Arc::new(LeaderSchedule::new(
@@ -646,14 +646,15 @@ mod tests {
             context.clock.timestamp_utc_ms(),
             commit_index,
         )];
+        let scoring_strategy = VoteScoringStrategy {};
         let mut calculator = ReputationScoreCalculator::new(
             context.clone(),
             &committer,
             &unscored_subdags,
-            Box::new(VoteScoringStrategy {}),
+            &scoring_strategy,
         );
         let scores = calculator.calculate();
         assert_eq!(scores.scores_per_authority, vec![3, 2, 2, 2]);
-        assert_eq!(scores.commit_range, CommitRange::new(1..2));
+        assert_eq!(scores.commit_range, (1..2).into());
     }
 }
