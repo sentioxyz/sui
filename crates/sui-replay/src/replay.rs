@@ -27,12 +27,8 @@ use prometheus::Registry;
 use serde::{Deserialize, Serialize};
 use shared_crypto::intent::Intent;
 use similar::{ChangeTag, TextDiff};
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-    sync::Mutex,
-};
+use std::{collections::{BTreeMap, HashSet}, path::PathBuf, sync::Arc, sync::Mutex, thread};
+use std::sync::mpsc;
 use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_core::{
     authority::{
@@ -571,14 +567,23 @@ impl LocalExec {
         &self,
         object_id: &ObjectID,
     ) -> Result<Option<Object>, ReplayEngineError> {
-        let resp = block_on({
+        let (tx, rx) = mpsc::channel();
+        let cloned_self = self.clone();
+        let cloned_object_id = *object_id;
+        thread::spawn(move || {
             //info!("Downloading latest object {object_id}");
-            self.multi_download_latest(&[*object_id])
-        })
-        .map(|mut q| {
-            q.pop()
-                .unwrap_or_else(|| panic!("Downloaded obj response cannot be empty {}", *object_id))
+            let resp = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                cloned_self.multi_download_latest(&[cloned_object_id]).await
+            });
+            tx.send(resp).unwrap();
         });
+        let resp = rx
+            .recv()
+            .unwrap()
+            .map(|mut q| {
+                q.pop()
+                    .unwrap_or_else(|| panic!("Downloaded obj response cannot be empty {}", *object_id))
+            });
 
         match resp {
             Ok(v) => Ok(Some(v)),
@@ -591,6 +596,37 @@ impl LocalExec {
                 version,
                 digest,
             }) => {
+                error!("Object {id} {version} {digest} was deleted on RPC server.");
+                Ok(None)
+            }
+            Err(err) => Err(ReplayEngineError::SuiRpcError {
+                err: err.to_string(),
+            }),
+        }
+    }
+
+    pub async fn download_latest_object_async(
+        &self,
+        object_id: &ObjectID,
+    ) -> Result<Option<Object>, ReplayEngineError> {
+        let resp =
+            //info!("Downloading latest object {object_id}");
+            self.multi_download_latest(&[*object_id]).await.map(|mut q| {
+                q.pop()
+                    .unwrap_or_else(|| panic!("Downloaded obj response cannot be empty {}", *object_id))
+            });
+
+        match resp {
+            Ok(v) => Ok(Some(v)),
+            Err(ReplayEngineError::ObjectNotExist { id }) => {
+                error!("Could not find object {id} on RPC server. It might have been pruned, deleted, or never existed.");
+                Ok(None)
+            }
+            Err(ReplayEngineError::ObjectDeleted {
+                    id,
+                    version,
+                    digest,
+                }) => {
                 error!("Object {id} {version} {digest} was deleted on RPC server.");
                 Ok(None)
             }
@@ -1653,64 +1689,75 @@ impl LocalExec {
         in_objs.extend(shared_inputs);
 
         // TODO(Zhe): Account for cancelled transaction assigned version here, and tests.
-        let resolved_input_objs = tx_info
-            .input_objects
-            .iter()
-            .flat_map(|kind| match kind {
+        let mut resolved_input_objs = vec![];
+        for kind in &tx_info.input_objects {
+            match kind {
                 InputObjectKind::MovePackage(i) => {
-                    // Okay to unwrap since we downloaded it
-                    Some(ObjectReadResult::new(
-                        *kind,
-                        self.storage
-                            .package_cache
-                            .lock()
-                            .expect("Cannot lock")
-                            .get(i)
-                            .unwrap_or(
-                                &self
-                                    .download_latest_object(i)
-                                    .expect("Object download failed")
-                                    .expect("Object not found on chain"),
-                            )
-                            .clone()
-                            .into(),
-                    ))
-                }
-                InputObjectKind::ImmOrOwnedMoveObject(o_ref) => Some(ObjectReadResult::new(
-                    *kind,
-                    self.storage
-                        .object_version_cache
+                    let mut is_none = false;
+                    match self.storage
+                        .package_cache
                         .lock()
                         .expect("Cannot lock")
-                        .get(&(o_ref.0, o_ref.1))
-                        .unwrap()
-                        .clone()
-                        .into(),
-                )),
-                InputObjectKind::SharedMoveObject { id, .. }
-                    if !deleted_shared_info_map.contains_key(id) =>
-                {
-                    // we already downloaded
-                    Some(ObjectReadResult::new(
+                        .get(i) {
+                        None => {
+                            is_none = true;
+                        }
+                        Some(o) => {
+                            resolved_input_objs.push(ObjectReadResult::new(
+                                *kind,
+                                o
+                                    .clone()
+                                    .into(),
+                            ))}
+                    };
+                    if is_none {
+                        resolved_input_objs.push(ObjectReadResult::new(
+                            *kind,
+                            self
+                                .download_latest_object_async(i).await
+                                .expect("Object download failed")
+                                .expect("Object not found on chain")
+                                .clone()
+                                .into(),
+                        ))
+                    }
+                }
+                InputObjectKind::ImmOrOwnedMoveObject(o_ref) => {
+                    resolved_input_objs.push(ObjectReadResult::new(
                         *kind,
                         self.storage
-                            .live_objects_store
-                            .get(id)
+                            .object_version_cache
+                            .lock()
+                            .expect("Cannot lock")
+                            .get(&(o_ref.0, o_ref.1))
                             .unwrap()
                             .clone()
                             .into(),
-                    ))
+                    ));
                 }
+                InputObjectKind::SharedMoveObject { id, .. }
+                if !deleted_shared_info_map.contains_key(id) =>
+                    {
+                        // we already downloaded
+                        resolved_input_objs.push(ObjectReadResult::new(
+                            *kind,
+                            self.storage
+                                .live_objects_store
+                                .get(id)
+                                .unwrap()
+                                .clone()
+                                .into(),
+                        ))
+                    }
                 InputObjectKind::SharedMoveObject { id, .. } => {
                     let (digest, version) = deleted_shared_info_map.get(id).unwrap();
-                    Some(ObjectReadResult::new(
+                    resolved_input_objs.push(ObjectReadResult::new(
                         *kind,
                         ObjectReadResultKind::DeletedSharedObject(*version, *digest),
                     ))
                 }
-            })
-            .collect();
-
+            }
+        }
         Ok(InputObjects::new(resolved_input_objs))
     }
 

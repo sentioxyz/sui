@@ -78,7 +78,7 @@ mod checked {
         let mut context = ExecutionContext::new(
             protocol_config,
             metrics,
-            vm,
+                vm,
             state_view,
             tx_context,
             gas_charger,
