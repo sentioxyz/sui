@@ -252,6 +252,8 @@ pub enum SuiClientCommands {
         rpc: String,
         #[clap(long, value_hint = ValueHint::Url)]
         ws: Option<String>,
+        #[clap(long, help = "Basic auth in the format of username:password")]
+        basic_auth: Option<String>,
     },
 
     /// Get object info
@@ -863,6 +865,12 @@ impl SuiClientCommands {
                 let sender = context.try_get_object_owner(&opts.gas).await?;
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
+                let package_path =
+                    package_path
+                        .canonicalize()
+                        .map_err(|e| SuiError::ModulePublishFailure {
+                            error: format!("Failed to canonicalize package path: {}", e),
+                        })?;
                 let (package_id, compiled_modules, dependencies, package_digest, upgrade_policy) =
                     upgrade_package(
                         client.read_api(),
@@ -936,6 +944,12 @@ impl SuiClientCommands {
                 let sender = context.try_get_object_owner(&opts.gas).await?;
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
+                let package_path =
+                    package_path
+                        .canonicalize()
+                        .map_err(|e| SuiError::ModulePublishFailure {
+                            error: format!("Failed to canonicalize package path: {}", e),
+                        })?;
                 let (dependencies, compiled_modules, _, _) = compile_package(
                     client.read_api(),
                     build_config.clone(),
@@ -1504,13 +1518,23 @@ impl SuiClientCommands {
                 let response = context.execute_transaction_may_fail(transaction).await?;
                 SuiClientCommandResult::TransactionBlock(response)
             }
-            SuiClientCommands::NewEnv { alias, rpc, ws } => {
+            SuiClientCommands::NewEnv {
+                alias,
+                rpc,
+                ws,
+                basic_auth,
+            } => {
                 if context.config.envs.iter().any(|env| env.alias == alias) {
                     return Err(anyhow!(
                         "Environment config with name [{alias}] already exists."
                     ));
                 }
-                let env = SuiEnv { alias, rpc, ws };
+                let env = SuiEnv {
+                    alias,
+                    rpc,
+                    ws,
+                    basic_auth,
+                };
 
                 // Check urls are valid and server is reachable
                 env.create_rpc_client(None, None).await?;
@@ -2633,9 +2657,9 @@ pub(crate) async fn dry_run_or_execute_or_serialize(
         opts.serialize_unsigned_transaction,
         opts.serialize_signed_transaction,
     );
-    assert!(
+    ensure!(
         !serialize_unsigned_transaction || !serialize_signed_transaction,
-        "Cannot specify both --serialize-unsigned-transaction and --serialize-signed-transaction"
+        "Cannot specify both flags: --serialize-unsigned-transaction and --serialize-signed-transaction."
     );
     let gas_price = if let Some(gas_price) = gas_price {
         gas_price

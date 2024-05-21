@@ -57,8 +57,8 @@ use sui_types::bridge::{get_bridge, TOKEN_ID_BTC, TOKEN_ID_ETH, TOKEN_ID_USDC, T
 use sui_types::bridge::{get_bridge_obj_initial_shared_version, BridgeSummary, BridgeTrait};
 use sui_types::committee::CommitteeTrait;
 use sui_types::committee::{Committee, EpochId};
-use sui_types::crypto::KeypairTraits;
 use sui_types::crypto::SuiKeyPair;
+use sui_types::crypto::{KeypairTraits, ToFromBytes};
 use sui_types::effects::{TransactionEffects, TransactionEvents};
 use sui_types::error::SuiResult;
 use sui_types::governance::MIN_VALIDATOR_JOINING_STAKE_MIST;
@@ -279,7 +279,7 @@ impl TestCluster {
         self.fullnode_handle
             .sui_node
             .state()
-            .get_cache_reader()
+            .get_object_cache_reader()
             .get_latest_object_ref_or_tombstone(object_id)
             .unwrap()
             .unwrap()
@@ -563,7 +563,7 @@ impl TestCluster {
                 while let Some(tx) = txns.next().await {
                     let digest = *tx.transaction_digest();
                     let tx = state
-                        .get_cache_reader()
+                        .get_transaction_cache_reader()
                         .get_transaction_block(&digest)
                         .unwrap()
                         .unwrap();
@@ -1143,6 +1143,7 @@ impl TestClusterBuilder {
             alias: "localnet".to_string(),
             rpc: fullnode_handle.rpc_url.clone(),
             ws: Some(fullnode_handle.ws_url.clone()),
+            basic_auth: None,
         });
         wallet_conf.active_env = Some("localnet".to_string());
 
@@ -1255,7 +1256,7 @@ impl TestClusterBuilder {
                 validator_address,
                 &gas,
                 bridge_arg,
-                kp.copy(),
+                kp.public().as_bytes().to_vec(),
                 &server_url,
                 ref_gas_price,
             )

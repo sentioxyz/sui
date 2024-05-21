@@ -30,6 +30,8 @@ pub(crate) const GENESIS_COMMIT_INDEX: CommitIndex = 0;
 /// Default wave length for all committers. A longer wave length increases the
 /// chance of committing the leader under asynchrony at the cost of latency in
 /// the common case.
+// TODO: merge DEFAULT_WAVE_LENGTH and MINIMUM_WAVE_LENGTH into a single constant,
+// because we are unlikely to change them via config in the forseeable future.
 pub(crate) const DEFAULT_WAVE_LENGTH: Round = MINIMUM_WAVE_LENGTH;
 
 /// We need at least one leader round, one voting round, and one decision round.
@@ -296,12 +298,12 @@ pub struct CommittedSubDag {
     pub commit_index: CommitIndex,
     /// Optional scores that are provided as part of the consensus output to Sui
     /// that can then be used by Sui for future submission to consensus.
-    pub reputation_scores: Vec<(AuthorityIndex, u64)>,
+    pub reputation_scores_desc: Vec<(AuthorityIndex, u64)>,
 }
 
 impl CommittedSubDag {
     /// Create new (empty) sub-dag.
-    pub fn new(
+    pub(crate) fn new(
         leader: BlockRef,
         blocks: Vec<VerifiedBlock>,
         timestamp_ms: BlockTimestampMs,
@@ -312,17 +314,17 @@ impl CommittedSubDag {
             blocks,
             timestamp_ms,
             commit_index,
-            reputation_scores: vec![],
+            reputation_scores_desc: vec![],
         }
     }
 
-    pub fn update_scores(&mut self, scores: Vec<(AuthorityIndex, u64)>) {
-        self.reputation_scores = scores;
+    pub(crate) fn update_scores(&mut self, reputation_scores_desc: Vec<(AuthorityIndex, u64)>) {
+        self.reputation_scores_desc = reputation_scores_desc;
     }
 
     /// Sort the blocks of the sub-dag by round number then authority index. Any
     /// deterministic & stable algorithm works.
-    pub fn sort(&mut self) {
+    pub(crate) fn sort(&mut self) {
         self.blocks.sort_by(|a, b| {
             a.round()
                 .cmp(&b.round())
@@ -350,11 +352,15 @@ impl Display for CommittedSubDag {
 
 impl fmt::Debug for CommittedSubDag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{} (", self.leader, self.commit_index)?;
+        write!(f, "{}@{} ([", self.leader, self.commit_index)?;
         for block in &self.blocks {
             write!(f, "{}, ", block.reference())?;
         }
-        write!(f, ")")
+        write!(
+            f,
+            "];{}ms;rs{:?})",
+            self.timestamp_ms, self.reputation_scores_desc
+        )
     }
 }
 
@@ -421,9 +427,7 @@ pub(crate) enum Decision {
     Indirect,
 }
 
-/// The status of every leader output by the committers. While the core only cares
-/// about committed leaders, providing a richer status allows for easier debugging,
-/// testing, and composition with advanced commit strategies.
+/// The status of a leader slot from the direct and indirect commit rules.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LeaderStatus {
     Commit(VerifiedBlock),
@@ -440,14 +444,6 @@ impl LeaderStatus {
         }
     }
 
-    pub(crate) fn authority(&self) -> AuthorityIndex {
-        match self {
-            Self::Commit(block) => block.author(),
-            Self::Skip(leader) => leader.authority,
-            Self::Undecided(leader) => leader.authority,
-        }
-    }
-
     pub(crate) fn is_decided(&self) -> bool {
         match self {
             Self::Commit(_) => true,
@@ -456,21 +452,11 @@ impl LeaderStatus {
         }
     }
 
-    // Only should be called when the leader status is decided (Commit/Skip)
-    pub fn get_decided_slot(&self) -> Slot {
+    pub(crate) fn into_decided_leader(self) -> Option<DecidedLeader> {
         match self {
-            Self::Commit(block) => block.reference().into(),
-            Self::Skip(leader) => *leader,
-            Self::Undecided(..) => panic!("Decided block is either Commit or Skip"),
-        }
-    }
-
-    // Only should be called when the leader status is decided (Commit/Skip)
-    pub fn into_committed_block(self) -> Option<VerifiedBlock> {
-        match self {
-            Self::Commit(block) => Some(block),
-            Self::Skip(_leader) => None,
-            Self::Undecided(..) => panic!("Decided block is either Commit or Skip"),
+            Self::Commit(block) => Some(DecidedLeader::Commit(block)),
+            Self::Skip(slot) => Some(DecidedLeader::Skip(slot)),
+            Self::Undecided(..) => None,
         }
     }
 }
@@ -479,8 +465,58 @@ impl Display for LeaderStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Commit(block) => write!(f, "Commit({})", block.reference()),
-            Self::Skip(leader) => write!(f, "Skip({leader})"),
-            Self::Undecided(leader) => write!(f, "Undecided({leader})"),
+            Self::Skip(slot) => write!(f, "Skip({slot})"),
+            Self::Undecided(slot) => write!(f, "Undecided({slot})"),
+        }
+    }
+}
+
+/// Decision of each leader slot.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DecidedLeader {
+    Commit(VerifiedBlock),
+    Skip(Slot),
+}
+
+impl DecidedLeader {
+    // Slot where the leader is decided.
+    pub(crate) fn slot(&self) -> Slot {
+        match self {
+            Self::Commit(block) => block.reference().into(),
+            Self::Skip(slot) => *slot,
+        }
+    }
+
+    // Converts to committed block if the decision is to commit. Returns None otherwise.
+    pub(crate) fn into_committed_block(self) -> Option<VerifiedBlock> {
+        match self {
+            Self::Commit(block) => Some(block),
+            Self::Skip(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn round(&self) -> Round {
+        match self {
+            Self::Commit(block) => block.round(),
+            Self::Skip(leader) => leader.round,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authority(&self) -> AuthorityIndex {
+        match self {
+            Self::Commit(block) => block.author(),
+            Self::Skip(leader) => leader.authority,
+        }
+    }
+}
+
+impl Display for DecidedLeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Commit(block) => write!(f, "Commit({})", block.reference()),
+            Self::Skip(slot) => write!(f, "Skip({slot})"),
         }
     }
 }

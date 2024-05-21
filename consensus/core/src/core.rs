@@ -28,7 +28,7 @@ use crate::{
     leader_schedule::LeaderSchedule,
     stake_aggregator::{QuorumThreshold, StakeAggregator},
     threshold_clock::ThresholdClock,
-    transaction::{TransactionConsumer, TransactionGuard},
+    transaction::TransactionConsumer,
     universal_committer::{
         universal_committer_builder::UniversalCommitterBuilder, UniversalCommitter,
     },
@@ -331,6 +331,7 @@ impl Core {
                     .saturating_duration_since(self.threshold_clock.get_quorum_ts())
                     .as_millis() as u64,
             );
+
         self.context
             .metrics
             .node_metrics
@@ -365,11 +366,7 @@ impl Core {
 
         // Consume the next transactions to be included. Do not drop the guards yet as this would acknowledge
         // the inclusion of transactions. Just let this be done in the end of the method.
-        let transaction_guards = self.transaction_consumer.next();
-        let transactions = transaction_guards
-            .iter()
-            .map(|t| t.transaction.clone())
-            .collect::<Vec<_>>();
+        let (transactions, ack_transactions) = self.transaction_consumer.next();
 
         // Consume the commit votes to be included.
         let commit_votes = self
@@ -418,9 +415,7 @@ impl Core {
         self.last_proposed_block = verified_block.clone();
 
         // Now acknowledge the transactions for their inclusion to block
-        transaction_guards
-            .into_iter()
-            .for_each(TransactionGuard::acknowledge);
+        ack_transactions();
 
         info!("Created block {:?}", verified_block);
 
@@ -449,9 +444,9 @@ impl Core {
             .protocol_config
             .mysticeti_leader_scoring_and_schedule()
         {
-            let sequenced_leaders = self.committer.try_commit(self.last_decided_leader);
-            if let Some(last) = sequenced_leaders.last() {
-                self.last_decided_leader = last.get_decided_slot();
+            let decided_leaders = self.committer.try_decide(self.last_decided_leader);
+            if let Some(last) = decided_leaders.last() {
+                self.last_decided_leader = last.slot();
                 self.context
                     .metrics
                     .node_metrics
@@ -459,7 +454,7 @@ impl Core {
                     .set(self.last_decided_leader.round as i64);
             }
 
-            let committed_leaders = sequenced_leaders
+            let committed_leaders = decided_leaders
                 .into_iter()
                 .filter_map(|leader| leader.into_committed_block())
                 .collect::<Vec<_>>();
@@ -490,16 +485,18 @@ impl Core {
                         "Leader schedule change triggered at commit index {last_commit_index}"
                     );
                     self.leader_schedule
-                        .update_leader_schedule(self.dag_state.clone(), &self.committer);
+                        .update_leader_schedule(self.dag_state.clone());
                     commits_until_update = self
                         .leader_schedule
                         .commits_until_leader_schedule_update(self.dag_state.clone());
+
+                    fail_point!("consensus-after-leader-schedule-change");
                 }
                 assert!(commits_until_update > 0);
 
                 // TODO: limit commits by commits_until_update, which may be needed when leader schedule length
                 // is reduced.
-                let decided_leaders = self.committer.try_commit(self.last_decided_leader);
+                let decided_leaders = self.committer.try_decide(self.last_decided_leader);
 
                 let Some(last_decided) = decided_leaders.last().cloned() else {
                     break;
@@ -518,7 +515,7 @@ impl Core {
                     self.last_decided_leader = sequenced_leaders.last().unwrap().slot();
                     sequenced_leaders
                 } else {
-                    self.last_decided_leader = last_decided.get_decided_slot();
+                    self.last_decided_leader = last_decided.slot();
                     sequenced_leaders
                 };
 
@@ -1026,7 +1023,7 @@ mod test {
             total += transaction.len();
             index += 1;
             let _w = transaction_client
-                .submit_no_wait(transaction)
+                .submit_no_wait(vec![transaction])
                 .await
                 .unwrap();
 
@@ -1344,7 +1341,7 @@ mod test {
                 1
             );
             let expected_reputation_scores =
-                ReputationScores::new((11..21).into(), vec![8, 8, 9, 8]);
+                ReputationScores::new((11..21).into(), vec![9, 8, 8, 8]);
             assert_eq!(
                 core.leader_schedule
                     .leader_swap_table

@@ -19,8 +19,7 @@ use crate::{
         CertificateScoringStrategy, CertifiedVoteScoringStrategyV1, CertifiedVoteScoringStrategyV2,
         ScoringStrategy, VoteScoringStrategy,
     },
-    universal_committer::UniversalCommitter,
-    Round,
+    CommitIndex, Round,
 };
 
 /// The `LeaderSchedule` is responsible for producing the leader schedule across
@@ -61,15 +60,13 @@ impl LeaderSchedule {
     /// Restores the `LeaderSchedule` from storage. It will attempt to retrieve the
     /// last stored `ReputationScores` and use them to build a `LeaderSwapTable`.
     pub(crate) fn from_store(context: Arc<Context>, dag_state: Arc<RwLock<DagState>>) -> Self {
-        let leader_swap_table = dag_state.read().last_reputation_scores_from_store().map_or(
+        let leader_swap_table = dag_state.read().recover_last_commit_info().map_or(
             LeaderSwapTable::default(),
-            |reputation_scores| {
+            |(last_commit_ref, last_commit_info)| {
                 LeaderSwapTable::new(
                     context.clone(),
-                    reputation_scores,
-                    context
-                        .protocol_config
-                        .consensus_bad_nodes_stake_threshold(),
+                    last_commit_ref.index,
+                    last_commit_info.reputation_scores,
                 )
             },
         );
@@ -117,11 +114,7 @@ impl LeaderSchedule {
             .unwrap() as usize
     }
 
-    pub(crate) fn update_leader_schedule(
-        &self,
-        dag_state: Arc<RwLock<DagState>>,
-        committer: &UniversalCommitter,
-    ) {
+    pub(crate) fn update_leader_schedule(&self, dag_state: Arc<RwLock<DagState>>) {
         let _s = self
             .context
             .metrics
@@ -142,7 +135,6 @@ impl LeaderSchedule {
             .start_timer();
         let reputation_scores = ReputationScoreCalculator::new(
             self.context.clone(),
-            committer,
             &unscored_subdags,
             self.scoring_strategy.as_ref(),
         )
@@ -151,12 +143,11 @@ impl LeaderSchedule {
 
         reputation_scores.update_metrics(self.context.clone());
 
+        let last_commit_index = unscored_subdags.last().unwrap().commit_index;
         self.update_leader_swap_table(LeaderSwapTable::new(
             self.context.clone(),
+            last_commit_index,
             reputation_scores.clone(),
-            self.context
-                .protocol_config
-                .consensus_bad_nodes_stake_threshold(),
         ));
 
         self.context
@@ -256,6 +247,10 @@ pub(crate) struct LeaderSwapTable {
     /// Storing the hostname & stake along side the authority index for debugging.
     pub(crate) bad_nodes: BTreeMap<AuthorityIndex, (String, Stake)>,
 
+    /// Scores by authority in descending order, needed by other parts of the system
+    /// for a consistent view on how each validator performs in consensus.
+    pub(crate) reputation_scores_desc: Vec<(AuthorityIndex, u64)>,
+
     // The scores for which the leader swap table was built from. This struct is
     // used for debugging purposes. Once `good_nodes` & `bad_nodes` are identified
     // the `reputation_scores` are no longer needed functionally for the swap table.
@@ -269,20 +264,56 @@ impl LeaderSwapTable {
     // The `swap_stake_threshold` should be in the range of [0 - 33].
     pub(crate) fn new(
         context: Arc<Context>,
+        commit_index: CommitIndex,
         reputation_scores: ReputationScores,
-        swap_stake_threshold: u64,
     ) -> Self {
+        let swap_stake_threshold = context
+            .protocol_config
+            .consensus_bad_nodes_stake_threshold();
+        Self::new_inner(
+            context,
+            swap_stake_threshold,
+            commit_index,
+            reputation_scores,
+        )
+    }
+
+    fn new_inner(
+        context: Arc<Context>,
+        // Ignore linter warning in simtests.
+        // TODO: maybe override protocol configs in tests for swap_stake_threshold, and call new().
+        #[allow(unused_variables)] swap_stake_threshold: u64,
+        commit_index: CommitIndex,
+        reputation_scores: ReputationScores,
+    ) -> Self {
+        #[cfg(msim)]
+        let swap_stake_threshold = 33;
+
         assert!(
             (0..=33).contains(&swap_stake_threshold),
             "The swap_stake_threshold ({swap_stake_threshold}) should be in range [0 - 33], out of bounds parameter detected"
         );
 
+        // When reputation scores are disabled or at genesis, use the default value.
+        if reputation_scores.scores_per_authority.is_empty() {
+            return Self::default();
+        }
+
+        // Randomize order of authorities when they have the same score,
+        // to avoid bias in the selection of the good and bad nodes.
+        let mut seed_bytes = [0u8; 32];
+        seed_bytes[28..32].copy_from_slice(&commit_index.to_le_bytes());
+        let mut rng = StdRng::from_seed(seed_bytes);
+        let mut authorities_by_score = reputation_scores.authorities_by_score(context.clone());
+        assert_eq!(authorities_by_score.len(), context.committee.size());
+        authorities_by_score.shuffle(&mut rng);
+        // Stable sort the authorities by score descending. Order of authorities with the same score is preserved.
+        authorities_by_score.sort_by(|a1, a2| a2.1.cmp(&a1.1));
+
         // Calculating the good nodes
         let good_nodes = Self::retrieve_first_nodes(
             context.clone(),
-            reputation_scores
-                .authorities_by_score_desc(context.clone())
-                .into_iter(),
+            authorities_by_score.iter(),
             swap_stake_threshold,
         )
         .into_iter()
@@ -293,10 +324,7 @@ impl LeaderSwapTable {
         // low scorers up to the provided stake threshold.
         let bad_nodes = Self::retrieve_first_nodes(
             context.clone(),
-            reputation_scores
-                .authorities_by_score_desc(context.clone())
-                .into_iter()
-                .rev(),
+            authorities_by_score.iter().rev(),
             swap_stake_threshold,
         )
         .into_iter()
@@ -324,6 +352,7 @@ impl LeaderSwapTable {
         Self {
             good_nodes,
             bad_nodes,
+            reputation_scores_desc: authorities_by_score,
             reputation_scores,
         }
     }
@@ -377,15 +406,15 @@ impl LeaderSwapTable {
     /// [0, 100] and expresses the percentage of stake that is considered the cutoff.
     /// It's the caller's responsibility to ensure that the elements of the `authorities`
     /// input is already sorted.
-    fn retrieve_first_nodes(
+    fn retrieve_first_nodes<'a>(
         context: Arc<Context>,
-        authorities: impl Iterator<Item = (AuthorityIndex, u64)>,
+        authorities: impl Iterator<Item = &'a (AuthorityIndex, u64)>,
         stake_threshold: u64,
     ) -> Vec<(AuthorityIndex, String, Stake)> {
         let mut filtered_authorities = Vec::new();
 
         let mut stake = 0;
-        for (authority_idx, _score) in authorities {
+        for &(authority_idx, _score) in authorities {
             stake += context.committee.stake(authority_idx);
 
             // If the total accumulated stake has surpassed the stake threshold
@@ -407,7 +436,7 @@ impl LeaderSwapTable {
 impl Debug for LeaderSwapTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(
-            "LeaderSwapTable for {:?}, good_nodes:{:?} with stake:{}, bad_nodes:{:?} with stake:{}",
+            "LeaderSwapTable for {:?}, good_nodes: {:?} with stake: {}, bad_nodes: {:?} with stake: {}",
             self.reputation_scores.commit_range,
             self.good_nodes
                 .iter()
@@ -428,12 +457,14 @@ impl Debug for LeaderSwapTable {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::max;
+
     use super::*;
     use crate::{
-        block::{BlockDigest, BlockRef, BlockTimestampMs, TestBlock, VerifiedBlock},
+        block::{BlockAPI as _, BlockDigest, BlockRef, BlockTimestampMs, TestBlock, VerifiedBlock},
         commit::{CommitDigest, CommitInfo, CommitRef, CommittedSubDag, TrustedCommit},
         storage::{mem_store::MemStore, Store, WriteBatch},
-        universal_committer::universal_committer_builder::UniversalCommitterBuilder,
+        test_dag_builder::DagBuilder,
     };
 
     #[tokio::test]
@@ -604,31 +635,43 @@ mod tests {
         let context = Arc::new(context);
         let store = Arc::new(MemStore::new());
 
-        let leader_timestamp = context.clock.timestamp_utc_ms();
-        let blocks = vec![
-            VerifiedBlock::new_for_test(
-                TestBlock::new(10, 2)
-                    .set_timestamp_ms(leader_timestamp)
-                    .build(),
-            ),
-            VerifiedBlock::new_for_test(TestBlock::new(9, 0).build()),
-            VerifiedBlock::new_for_test(TestBlock::new(9, 2).build()),
-            VerifiedBlock::new_for_test(TestBlock::new(9, 3).build()),
-        ];
+        // Populate fully connected test blocks for round 0 ~ 11, authorities 0 ~ 3.
+        let mut dag_builder = DagBuilder::new(context.clone());
+        dag_builder.layers(1..=11).build();
+        let mut subdags = vec![];
+        let mut expected_commits = vec![];
+        let leaders = dag_builder
+            .leader_blocks(1..=11)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut blocks_to_write = vec![];
 
-        let leader = blocks[0].clone();
-        let leader_ref = leader.reference();
-        let last_commit_index = 10;
-        let last_commit = TrustedCommit::new_for_test(
-            last_commit_index,
-            CommitDigest::MIN,
-            leader_timestamp,
-            leader_ref,
-            blocks
-                .iter()
-                .map(|block| block.reference())
-                .collect::<Vec<_>>(),
-        );
+        let mut last_committed_rounds = vec![0; 4];
+        for (idx, leader) in leaders.into_iter().enumerate() {
+            let commit_index = idx as u32 + 1;
+            let mut subdag =
+                dag_builder.get_subdag(leader.clone(), last_committed_rounds.clone(), commit_index);
+            for block in subdag.blocks.iter() {
+                blocks_to_write.push(block.clone());
+                last_committed_rounds[block.author().value()] =
+                    max(block.round(), last_committed_rounds[block.author().value()]);
+            }
+            let commit = TrustedCommit::new_for_test(
+                commit_index,
+                CommitDigest::MIN,
+                leader.timestamp_ms(),
+                leader.reference(),
+                subdag
+                    .blocks
+                    .iter()
+                    .map(|block| block.reference())
+                    .collect::<Vec<_>>(),
+            );
+            expected_commits.push(commit);
+            subdag.sort();
+            subdags.push(subdag);
+        }
 
         // The CommitInfo for the first 10 commits are written to store. This is the
         // info that LeaderSchedule will be recovered from
@@ -641,57 +684,15 @@ mod tests {
             committed_rounds,
         };
 
+        // CommitIndex '11' will be written to store. This should result in the cached
+        // last_committed_rounds & unscored subdags in DagState to be updated with the
+        // latest commit information on recovery.
         store
             .write(
                 WriteBatch::default()
                     .commit_info(vec![(commit_ref, commit_info)])
-                    .blocks(blocks)
-                    .commits(vec![last_commit]),
-            )
-            .unwrap();
-
-        // CommitIndex '11' will be written to store. This should result in the cached
-        // last_committed_rounds & unscored subdags in DagState to be updated with the
-        // latest commit information on recovery.
-        let leader_timestamp = context.clock.timestamp_utc_ms();
-        let blocks = vec![
-            VerifiedBlock::new_for_test(
-                TestBlock::new(11, 3)
-                    .set_timestamp_ms(leader_timestamp)
-                    .build(),
-            ),
-            VerifiedBlock::new_for_test(TestBlock::new(10, 0).build()),
-            VerifiedBlock::new_for_test(TestBlock::new(10, 1).build()),
-            VerifiedBlock::new_for_test(TestBlock::new(10, 3).build()),
-        ];
-
-        let leader = blocks[0].clone();
-        let leader_ref = leader.reference();
-        let last_commit_index = 11;
-        let mut expected_subdag = CommittedSubDag::new(
-            leader_ref,
-            blocks.clone(),
-            leader_timestamp,
-            last_commit_index,
-        );
-        expected_subdag.sort();
-        let expected_unscored_subdags = vec![expected_subdag.clone()];
-        let expected_last_committed_rounds = vec![10, 10, 10, 11];
-        let last_commit = TrustedCommit::new_for_test(
-            last_commit_index,
-            CommitDigest::MIN,
-            leader_timestamp,
-            leader_ref,
-            blocks
-                .iter()
-                .map(|block| block.reference())
-                .collect::<Vec<_>>(),
-        );
-        store
-            .write(
-                WriteBatch::default()
-                    .blocks(blocks)
-                    .commits(vec![last_commit]),
+                    .blocks(blocks_to_write)
+                    .commits(expected_commits),
             )
             .unwrap();
 
@@ -699,17 +700,14 @@ mod tests {
 
         // Check that DagState recovery from stored CommitInfo worked correctly
         assert_eq!(
-            expected_last_committed_rounds,
+            last_committed_rounds,
             dag_state.read().last_committed_rounds()
         );
         let actual_unscored_subdags = dag_state.read().unscored_committed_subdags();
-        assert_eq!(
-            expected_unscored_subdags.len() as u64,
-            dag_state.read().unscored_committed_subdags_count()
-        );
+        assert_eq!(1, dag_state.read().unscored_committed_subdags_count());
         let mut actual_subdag = actual_unscored_subdags[0].clone();
         actual_subdag.sort();
-        assert_eq!(expected_subdag, actual_subdag);
+        assert_eq!(*subdags.last().unwrap(), actual_subdag);
 
         let leader_schedule = LeaderSchedule::from_store(context.clone(), dag_state.clone());
 
@@ -721,9 +719,130 @@ mod tests {
             AuthorityIndex::new_for_test(0)
         );
         assert_eq!(leader_swap_table.bad_nodes.len(), 1);
-        assert!(leader_swap_table
-            .bad_nodes
-            .contains_key(&AuthorityIndex::new_for_test(1)));
+        assert!(
+            leader_swap_table
+                .bad_nodes
+                .contains_key(&AuthorityIndex::new_for_test(2)),
+            "{:?}",
+            leader_swap_table.bad_nodes
+        );
+    }
+
+    #[tokio::test]
+    async fn test_leader_schedule_from_store_no_commits() {
+        telemetry_subscribers::init_for_testing();
+        let mut context = Context::new_for_test(4).0;
+        context
+            .protocol_config
+            .set_consensus_bad_nodes_stake_threshold(33);
+        let context = Arc::new(context);
+        let store = Arc::new(MemStore::new());
+
+        let dag_state = Arc::new(RwLock::new(DagState::new(context.clone(), store)));
+
+        let expected_last_committed_rounds = vec![0, 0, 0, 0];
+
+        // Check that DagState recovery from stored CommitInfo worked correctly
+        assert_eq!(
+            expected_last_committed_rounds,
+            dag_state.read().last_committed_rounds()
+        );
+        assert_eq!(0, dag_state.read().unscored_committed_subdags_count());
+
+        let leader_schedule = LeaderSchedule::from_store(context.clone(), dag_state.clone());
+
+        // Check that LeaderSchedule recovery from stored CommitInfo worked correctly
+        let leader_swap_table = leader_schedule.leader_swap_table.read();
+        assert_eq!(leader_swap_table.good_nodes.len(), 0);
+        assert_eq!(leader_swap_table.bad_nodes.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_leader_schedule_from_store_no_commit_info() {
+        telemetry_subscribers::init_for_testing();
+        let mut context = Context::new_for_test(4).0;
+        context
+            .protocol_config
+            .set_consensus_bad_nodes_stake_threshold(33);
+        let context = Arc::new(context);
+        let store = Arc::new(MemStore::new());
+
+        // Populate fully connected test blocks for round 0 ~ 2, authorities 0 ~ 3.
+        let mut dag_builder = DagBuilder::new(context.clone());
+        dag_builder.layers(1..=2).build();
+
+        let mut expected_unscored_subdags = vec![];
+        let mut expected_commits = vec![];
+        let leaders = dag_builder
+            .leader_blocks(1..=2)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut blocks_to_write = vec![];
+
+        let mut last_committed_rounds = vec![0; 4];
+        for (idx, leader) in leaders.into_iter().enumerate() {
+            let commit_index = idx as u32 + 1;
+            let mut subdag =
+                dag_builder.get_subdag(leader.clone(), last_committed_rounds.clone(), commit_index);
+            for block in subdag.blocks.iter() {
+                blocks_to_write.push(block.clone());
+                last_committed_rounds[block.author().value()] =
+                    max(block.round(), last_committed_rounds[block.author().value()]);
+            }
+            let commit = TrustedCommit::new_for_test(
+                commit_index,
+                CommitDigest::MIN,
+                leader.timestamp_ms(),
+                leader.reference(),
+                subdag
+                    .blocks
+                    .iter()
+                    .map(|block| block.reference())
+                    .collect::<Vec<_>>(),
+            );
+            expected_commits.push(commit);
+            subdag.sort();
+            expected_unscored_subdags.push(subdag);
+        }
+
+        // The CommitInfo for the first 2 commits are written to store. 10 commits
+        // would have been required for a leader schedule update so at this point
+        // no commit info should have been persisted and no leader schedule should
+        // be recovered. However dag state should have properly recovered the
+        // unscored subdags & last committed rounds.
+        store
+            .write(
+                WriteBatch::default()
+                    .blocks(blocks_to_write)
+                    .commits(expected_commits),
+            )
+            .unwrap();
+
+        let dag_state = Arc::new(RwLock::new(DagState::new(context.clone(), store)));
+
+        // Check that DagState recovery from stored CommitInfo worked correctly
+        assert_eq!(
+            last_committed_rounds,
+            dag_state.read().last_committed_rounds()
+        );
+        let actual_unscored_subdags = dag_state.read().unscored_committed_subdags();
+        assert_eq!(
+            expected_unscored_subdags.len() as u64,
+            dag_state.read().unscored_committed_subdags_count()
+        );
+        for (idx, expected_subdag) in expected_unscored_subdags.into_iter().enumerate() {
+            let mut actual_subdag = actual_unscored_subdags[idx].clone();
+            actual_subdag.sort();
+            assert_eq!(expected_subdag, actual_subdag);
+        }
+
+        let leader_schedule = LeaderSchedule::from_store(context.clone(), dag_state.clone());
+
+        // Check that LeaderSchedule recovery from stored CommitInfo worked correctly
+        let leader_swap_table = leader_schedule.leader_swap_table.read();
+        assert_eq!(leader_swap_table.good_nodes.len(), 0);
+        assert_eq!(leader_swap_table.bad_nodes.len(), 0);
     }
 
     #[tokio::test]
@@ -845,26 +964,18 @@ mod tests {
         dag_state_write.add_unscored_committed_subdags(unscored_subdags);
         drop(dag_state_write);
 
-        let committer = UniversalCommitterBuilder::new(
-            context.clone(),
-            leader_schedule.clone(),
-            dag_state.clone(),
-        )
-        .with_pipeline(true)
-        .build();
-
         assert_eq!(
             leader_schedule.elect_leader(4, 0),
             AuthorityIndex::new_for_test(0)
         );
 
-        leader_schedule.update_leader_schedule(dag_state.clone(), &committer);
+        leader_schedule.update_leader_schedule(dag_state.clone());
 
         let leader_swap_table = leader_schedule.leader_swap_table.read();
         assert_eq!(leader_swap_table.good_nodes.len(), 1);
         assert_eq!(
             leader_swap_table.good_nodes[0].0,
-            AuthorityIndex::new_for_test(3)
+            AuthorityIndex::new_for_test(2)
         );
         assert_eq!(leader_swap_table.bad_nodes.len(), 1);
         assert!(leader_swap_table
@@ -872,7 +983,7 @@ mod tests {
             .contains_key(&AuthorityIndex::new_for_test(0)));
         assert_eq!(
             leader_schedule.elect_leader(4, 0),
-            AuthorityIndex::new_for_test(3)
+            AuthorityIndex::new_for_test(2)
         );
     }
 
@@ -885,7 +996,7 @@ mod tests {
         let reputation_scores =
             ReputationScores::new((0..11).into(), (0..4).map(|i| i as u64).collect::<Vec<_>>());
         let leader_swap_table =
-            LeaderSwapTable::new(context, reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context, swap_stake_threshold, 0, reputation_scores);
 
         assert_eq!(leader_swap_table.good_nodes.len(), 1);
         assert_eq!(
@@ -907,7 +1018,7 @@ mod tests {
         let reputation_scores =
             ReputationScores::new((0..11).into(), (0..4).map(|i| i as u64).collect::<Vec<_>>());
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         // Test swapping a bad leader
         let leader = AuthorityIndex::new_for_test(0);
@@ -929,7 +1040,7 @@ mod tests {
         telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
-        let authorities = vec![
+        let authorities = [
             (AuthorityIndex::new_for_test(0), 1),
             (AuthorityIndex::new_for_test(1), 2),
             (AuthorityIndex::new_for_test(2), 3),
@@ -939,7 +1050,7 @@ mod tests {
         let stake_threshold = 50;
         let filtered_authorities = LeaderSwapTable::retrieve_first_nodes(
             context.clone(),
-            authorities.into_iter(),
+            authorities.iter(),
             stake_threshold,
         );
 
@@ -973,7 +1084,7 @@ mod tests {
         let swap_stake_threshold = 34;
         let reputation_scores =
             ReputationScores::new((0..11).into(), (0..4).map(|i| i as u64).collect::<Vec<_>>());
-        LeaderSwapTable::new(context, reputation_scores, swap_stake_threshold);
+        LeaderSwapTable::new_inner(context, swap_stake_threshold, 0, reputation_scores);
     }
 
     #[tokio::test]
@@ -985,7 +1096,7 @@ mod tests {
         let reputation_scores =
             ReputationScores::new((1..11).into(), (0..4).map(|i| i as u64).collect::<Vec<_>>());
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         let leader_schedule = LeaderSchedule::new(context.clone(), LeaderSwapTable::default());
 
@@ -997,7 +1108,7 @@ mod tests {
             (0..4).map(|i| i as u64).collect::<Vec<_>>(),
         );
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         // Update leader from old swap table to new valid swap table
         leader_schedule.update_leader_swap_table(leader_swap_table.clone());
@@ -1015,7 +1126,7 @@ mod tests {
         let reputation_scores =
             ReputationScores::new((1..11).into(), (0..4).map(|i| i as u64).collect::<Vec<_>>());
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         let leader_schedule = LeaderSchedule::new(context.clone(), LeaderSwapTable::default());
 
@@ -1027,7 +1138,7 @@ mod tests {
             (0..4).map(|i| i as u64).collect::<Vec<_>>(),
         );
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         // Update leader from old swap table to new valid swap table
         leader_schedule.update_leader_swap_table(leader_swap_table.clone());
@@ -1037,7 +1148,7 @@ mod tests {
             (0..4).map(|i| i as u64).collect::<Vec<_>>(),
         );
         let leader_swap_table =
-            LeaderSwapTable::new(context.clone(), reputation_scores, swap_stake_threshold);
+            LeaderSwapTable::new_inner(context.clone(), swap_stake_threshold, 0, reputation_scores);
 
         // Update leader from old swap table to new invalid swap table
         leader_schedule.update_leader_swap_table(leader_swap_table.clone());
