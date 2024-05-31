@@ -40,6 +40,7 @@ pub fn move_value_to_json(val: A::MoveValue, trace_v2: bool) -> Value {
         A::MoveValue::U16(n) => serde_json::to_value(n).unwrap(),
         A::MoveValue::U32(n) => serde_json::to_value(n).unwrap(),
         A::MoveValue::U256(n) => serde_json::to_value(n.to_string()).unwrap(),
+        A::MoveValue::Variant(var) => serde_json::to_value(var.to_string()).unwrap(),
     }
 }
 

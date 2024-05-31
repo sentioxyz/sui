@@ -2636,13 +2636,10 @@ impl Loader {
             Type::Vector(ty) => R::MoveTypeLayout::Vector(Box::new(
                 self.type_to_type_layout_impl(ty, count, depth + 1)?,
             )),
-            Type::Struct(gidx) => R::MoveTypeLayout::Struct(self.struct_gidx_to_type_layout(
-                *gidx,
-                &[],
-                count,
-                depth,
-            )?),
-            Type::StructInstantiation(struct_inst) => {
+            Type::Datatype(gidx) => self
+                .type_gidx_to_type_layout(*gidx, &[], count, depth)?
+                .into_layout(),
+            Type::DatatypeInstantiation(struct_inst) => {
                 let (gidx, init_ty_args) = &**struct_inst;
                 // map ty_args to types if the type is tyParam
                 let new_init_ty_args = init_ty_args.iter().map(|ty| {
@@ -2651,7 +2648,7 @@ impl Loader {
                         _ => ty.clone()
                     }
                 }).collect::<Vec<_>>();
-                R::MoveTypeLayout::Struct(self.struct_gidx_to_type_layout(*gidx, &new_init_ty_args, count, depth)?)
+                self.type_gidx_to_type_layout(*gidx, &new_init_ty_args, count, depth)?.into_layout()
             },
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
@@ -2826,10 +2823,10 @@ impl Loader {
             Type::Vector(ty) => A::MoveTypeLayout::Vector(Box::new(
                 self.type_to_fully_annotated_layout_impl(ty, count, depth + 1)?,
             )),
-            Type::Struct(gidx) => A::MoveTypeLayout::Struct(
-                self.struct_gidx_to_fully_annotated_layout(*gidx, &[], count, depth)?,
-            ),
-            Type::StructInstantiation(struct_inst) => {
+            Type::Datatype(gidx) => self
+                .datatype_gidx_to_fully_annotated_layout(*gidx, &[], count, depth)?
+                .into_layout(),
+            Type::DatatypeInstantiation(struct_inst) => {
                 let (gidx, init_ty_args) = &**struct_inst;
                 // map ty_args to types if the type is tyParam
                 let new_init_ty_args = init_ty_args.iter().map(|ty| {
@@ -2838,7 +2835,7 @@ impl Loader {
                         _ => ty.clone()
                     }
                 }).collect::<Vec<_>>();
-                A::MoveTypeLayout::Struct(self.struct_gidx_to_fully_annotated_layout(*gidx, &new_init_ty_args, count, depth)?)
+                self.datatype_gidx_to_fully_annotated_layout(*gidx, &new_init_ty_args, count, depth)?.into_layout()
             },
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
