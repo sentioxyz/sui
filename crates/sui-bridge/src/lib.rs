@@ -12,6 +12,7 @@ pub mod eth_client;
 pub mod eth_syncer;
 pub mod eth_transaction_builder;
 pub mod events;
+pub mod metrics;
 pub mod node;
 pub mod orchestrator;
 pub mod server;
@@ -36,7 +37,6 @@ pub const BRIDGE_ENABLE_PROTOCOL_VERSION: u64 = 45;
 #[cfg(test)]
 pub mod e2e_tests;
 
-// TODO: can we log the error very time it gets retried?
 #[macro_export]
 macro_rules! retry_with_max_elapsed_time {
     ($func:expr, $max_elapsed_time:expr) => {{

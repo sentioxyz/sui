@@ -30,6 +30,8 @@ mod unit_tests;
 pub mod vm_status;
 pub mod call_trace;
 
+pub const VARIANT_COUNT_MAX: u64 = 127;
+
 pub(crate) fn fmt_list<T: fmt::Display>(
     f: &mut fmt::Formatter<'_>,
     begin: &str,
