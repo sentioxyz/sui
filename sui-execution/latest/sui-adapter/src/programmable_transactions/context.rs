@@ -20,8 +20,8 @@ mod checked {
         errors::{Location, PartialVMError, PartialVMResult, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
         CompiledModule,
+        call_trace::CallTraces,
     };
-    use move_core_types::call_trace::CallTraces;
     use move_core_types::gas_algebra::NumBytes;
     use move_core_types::resolver::ModuleResolver;
     use move_core_types::vm_status::StatusCode;

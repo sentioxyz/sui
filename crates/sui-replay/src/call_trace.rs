@@ -1,4 +1,5 @@
-use move_core_types::call_trace::InternalCallTrace;
+use move_binary_format::call_trace::InternalCallTrace;
+use move_binary_format::errors::VMError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
@@ -22,6 +23,16 @@ pub struct CallTraceWithSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     pub pc: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CallTraceError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CallTraceError {
+    pub major_status: move_core_types::vm_status::StatusCode,
+    pub sub_status: Option<u64>,
+    pub message: Option<String>,
+    pub location: Option<Location>,
 }
 
 impl CallTraceWithSource {
@@ -37,6 +48,7 @@ impl CallTraceWithSource {
             calls: vec![],
             location: None,
             pc: 0,
+            error: None,
         }
     }
 
@@ -77,7 +89,19 @@ impl CallTraceWithSource {
                 .map(|sub_trace| CallTraceWithSource::from(sub_trace, trace_v2))
                 .collect(),
             location: None,
-            pc: call_trace.pc
+            pc: call_trace.pc,
+            error: {
+                if let Some(vm_error) = call_trace.error {
+                    Some(CallTraceError {
+                        major_status: vm_error.major_status(),
+                        sub_status: vm_error.sub_status(),
+                        message: vm_error.message().cloned(),
+                        location: None, // TODO
+                    })
+                } else {
+                    None
+                }
+            },
         }
     }
 }

@@ -14,12 +14,12 @@ use move_binary_format::{
     errors::{verification_error, Location, PartialVMError, PartialVMResult, VMResult},
     file_format::{AbilitySet, LocalIndex},
     CompiledModule, IndexKind,
+    call_trace::CallTraces,
 };
 use move_bytecode_verifier::script_signature;
 use move_core_types::{
     account_address::AccountAddress,
     annotated_value as A,
-    call_trace::CallTraces,
     identifier::{IdentStr, Identifier},
     language_storage::{ModuleId, TypeTag},
     resolver::MoveResolver,

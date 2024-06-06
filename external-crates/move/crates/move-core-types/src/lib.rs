@@ -28,7 +28,6 @@ pub mod u256;
 #[cfg(test)]
 mod unit_tests;
 pub mod vm_status;
-pub mod call_trace;
 
 pub const VARIANT_COUNT_MAX: u64 = 127;
 

@@ -12,8 +12,9 @@ mod checked {
         file_format::{AbilitySet, CodeOffset, FunctionDefinitionIndex, LocalIndex, Visibility},
         file_format_common::VERSION_6,
         normalized, CompiledModule,
+        call_trace::{CallTraces, InternalCallTrace, InputValue},
     };
-    use move_core_types::{account_address::AccountAddress, call_trace::CallTraces, ident_str, identifier::IdentStr, language_storage::{ModuleId, TypeTag}, u256::U256};
+    use move_core_types::{account_address::AccountAddress, ident_str, identifier::IdentStr, language_storage::{ModuleId, TypeTag}, u256::U256};
     use move_vm_runtime::{
         move_vm::MoveVM,
         session::{LoadedFunctionInstantiation, SerializedReturnValues},
@@ -25,7 +26,6 @@ mod checked {
         fmt,
         sync::Arc,
     };
-    use move_core_types::call_trace::{InputValue, InternalCallTrace};
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::execution_config_utils::to_binary_config;
@@ -265,6 +265,7 @@ mod checked {
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
                         fdef_idx: 0,
+                        error: None,
                     };
                     call_traces.push(call_trace).expect("Failed to push call trace");
                     (vec![], Some(call_traces))

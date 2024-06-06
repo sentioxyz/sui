@@ -11,10 +11,10 @@ use fail::fail_point;
 use move_binary_format::{
     errors::*,
     file_format::{Bytecode, FunctionHandleIndex, FunctionInstantiationIndex, JumpTableInner},
+    call_trace::{CallTraces, InternalCallTrace, InputValue},
 };
 use move_core_types::{
     account_address::AccountAddress,
-    call_trace::{CallTraces, InternalCallTrace},
     gas_algebra::{NumArgs, NumBytes},
     identifier::IdentStr,
     language_storage::TypeTag,
@@ -41,7 +41,6 @@ use smallvec::SmallVec;
 
 use crate::native_extensions::NativeContextExtensions;
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
-use move_core_types::call_trace::InputValue;
 use tracing::error;
 
 macro_rules! debug_write {
@@ -394,6 +393,7 @@ impl Interpreter {
                 loader.type_to_type_tag(ty).unwrap().to_string()
             }).collect(),
             sub_traces: CallTraces::new(),
+            error: None,
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
             let err = set_err_info!(current_frame, err);
@@ -403,9 +403,9 @@ impl Interpreter {
             let resolver = current_frame.resolver(link_context, loader);
             let exit_code = current_frame //self
                 .execute_code(&resolver, &mut self, gas_meter)
-                .map_err(|err| self.maybe_core_dump(err, &current_frame))?;
+                .map_err(|err| self.maybe_core_dump(err, &current_frame));
             match exit_code {
-                ExitCode::Return => {
+                Ok(ExitCode::Return) => {
                     let non_ref_vals = current_frame
                         .locals
                         .drop_all_values()
@@ -472,7 +472,7 @@ impl Interpreter {
                         return Ok((self.operand_stack.value, call_traces));
                     }
                 }
-                ExitCode::Call(fh_idx) => {
+                Ok(ExitCode::Call(fh_idx)) => {
                     let func = resolver.function_from_handle(fh_idx);
                     // Compiled out in release mode
                     #[cfg(debug_assertions)]
@@ -493,7 +493,9 @@ impl Interpreter {
                         .map_err(|e| set_err_info!(current_frame, e))?;
 
                     if func.is_native() {
-                        self.call_native(&resolver, gas_meter, extensions, func, vec![])?;
+                        self.call_native(
+                            &resolver, gas_meter, extensions, func, vec![]
+                        ).map_err(|e| call_traces.set_error(e));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
 
                         profile_close_frame!(gas_meter, func_name);
@@ -543,6 +545,7 @@ impl Interpreter {
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
+                        error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
@@ -560,7 +563,7 @@ impl Interpreter {
                     // Note: the caller will find the the callee's return values at the top of the shared operand stack
                     current_frame = frame;
                 }
-                ExitCode::CallGeneric(idx) => {
+                Ok(ExitCode::CallGeneric(idx)) => {
                     // TODO(Gas): We should charge gas as we do type substitution...
                     let ty_args = resolver
                         .instantiate_generic_function(idx, current_frame.ty_args())
@@ -586,7 +589,9 @@ impl Interpreter {
                         .map_err(|e| set_err_info!(current_frame, e))?;
 
                     if func.is_native() {
-                        self.call_native(&resolver, gas_meter, extensions, func, ty_args)?;
+                        self.call_native(
+                            &resolver, gas_meter, extensions, func, ty_args
+                        ).map_err(|e| call_traces.set_error(e));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
 
                         profile_close_frame!(gas_meter, func_name);
@@ -647,6 +652,7 @@ impl Interpreter {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
+                        error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
@@ -662,6 +668,14 @@ impl Interpreter {
                         self.maybe_core_dump(err, &frame)
                     })?;
                     current_frame = frame;
+                }
+                Err(err) => {
+                    call_traces.set_error(err);
+                    while let Some(_) = self.call_stack.pop() {
+                        let top_call = call_traces.pop().unwrap();
+                        call_traces.push_call_trace(top_call);
+                    }
+                    return Ok((self.operand_stack.value, call_traces));
                 }
             }
         }

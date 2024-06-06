@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use move_core_types::identifier::Identifier;
 use serde_json::{Map, Value};
 use move_core_types::annotated_value as A;
-use move_core_types::call_trace::InputValue;
+use move_binary_format::call_trace::InputValue;
 
 pub fn input_value_to_json(val: InputValue, trace_v2: bool) -> Value {
     match val {
