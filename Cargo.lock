@@ -14933,7 +14933,7 @@ dependencies = [
 
 [[package]]
 name = "sui-trace-server"
-version = "1.32.0"
+version = "1.33.0"
 dependencies = [
  "anyhow",
  "axum 0.7.5",
@@ -14946,6 +14946,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
