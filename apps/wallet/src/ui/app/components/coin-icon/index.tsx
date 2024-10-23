@@ -4,8 +4,10 @@
 import { ImageIcon } from '_app/shared/image-icon';
 import { useCoinMetadata } from '@mysten/core';
 import { Sui, Unstaked } from '@mysten/icons';
-import { SUI_TYPE_ARG } from '@mysten/sui/utils';
+import { normalizeStructTag, SUI_TYPE_ARG } from '@mysten/sui/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
+
+import { useCoinMetadataOverrides } from '../../hooks/useCoinMetadataOverride';
 
 const imageStyle = cva(['rounded-full flex'], {
 	variants: {
@@ -38,11 +40,13 @@ type NonSuiCoinProps = {
 
 function NonSuiCoin({ coinType }: NonSuiCoinProps) {
 	const { data: coinMeta } = useCoinMetadata(coinType);
+	const coinMetadataOverrides = useCoinMetadataOverrides();
+
 	return (
-		<div className="flex h-full w-full items-center justify-center text-white bg-steel rounded-full">
+		<div className="flex h-full w-full items-center justify-center text-white bg-steel rounded-full overflow-hidden">
 			{coinMeta?.iconUrl ? (
 				<ImageIcon
-					src={coinMeta.iconUrl}
+					src={coinMetadataOverrides[coinType]?.iconUrl ?? coinMeta.iconUrl}
 					label={coinMeta.name || coinType}
 					fallback={coinMeta.name || coinType}
 					rounded="full"
@@ -59,9 +63,13 @@ export interface CoinIconProps extends VariantProps<typeof imageStyle> {
 }
 
 export function CoinIcon({ coinType, ...styleProps }: CoinIconProps) {
+	const isSui = coinType
+		? normalizeStructTag(coinType) === normalizeStructTag(SUI_TYPE_ARG)
+		: false;
+
 	return (
 		<div className={imageStyle(styleProps)}>
-			{coinType === SUI_TYPE_ARG ? <SuiCoin /> : <NonSuiCoin coinType={coinType} />}
+			{isSui ? <SuiCoin /> : <NonSuiCoin coinType={coinType} />}
 		</div>
 	);
 }

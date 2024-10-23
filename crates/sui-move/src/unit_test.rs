@@ -10,23 +10,14 @@ use move_package::BuildConfig;
 use move_unit_test::{extensions::set_extension_hook, UnitTestingConfig};
 use move_vm_runtime::native_extensions::NativeContextExtensions;
 use once_cell::sync::Lazy;
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{cell::RefCell, collections::BTreeMap, path::Path, sync::Arc};
 use sui_move_build::decorate_warnings;
 use sui_move_natives::test_scenario::InMemoryTestStore;
 use sui_move_natives::{object_runtime::ObjectRuntime, NativesCostTable};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
-    base_types::{ObjectID, SequenceNumber},
-    error::SuiResult,
-    gas_model::tables::initial_cost_schedule_for_unit_tests,
-    in_memory_storage::InMemoryStorage,
+    gas_model::tables::initial_cost_schedule_for_unit_tests, in_memory_storage::InMemoryStorage,
     metrics::LimitsMetrics,
-    object::Object,
-    storage::ChildObjectResolver,
 };
 
 // Move unit tests will halt after executing this many steps. This is a protection to avoid divergence
@@ -42,7 +33,7 @@ pub struct Test {
 impl Test {
     pub fn execute(
         self,
-        path: Option<PathBuf>,
+        path: Option<&Path>,
         build_config: BuildConfig,
     ) -> anyhow::Result<UnitTestResult> {
         let compute_coverage = self.test.compute_coverage;
@@ -55,7 +46,7 @@ impl Test {
         let rerooted_path = base::reroot_path(path)?;
         let unit_test_config = self.test.unit_test_config();
         run_move_unit_tests(
-            rerooted_path,
+            &rerooted_path,
             build_config,
             Some(unit_test_config),
             compute_coverage,
@@ -63,30 +54,10 @@ impl Test {
     }
 }
 
-struct DummyChildObjectStore {}
-
-impl ChildObjectResolver for DummyChildObjectStore {
-    fn read_child_object(
-        &self,
-        _parent: &ObjectID,
-        _child: &ObjectID,
-        _child_version_upper_bound: SequenceNumber,
-    ) -> SuiResult<Option<Object>> {
-        Ok(None)
-    }
-    fn get_object_received_at_version(
-        &self,
-        _owner: &ObjectID,
-        _receiving_object_id: &ObjectID,
-        _receive_object_at_version: SequenceNumber,
-        _epoch_id: sui_types::committee::EpochId,
-    ) -> SuiResult<Option<Object>> {
-        Ok(None)
-    }
+// Create a separate test store per-thread.
+thread_local! {
+    static TEST_STORE_INNER: RefCell<InMemoryStorage> = RefCell::new(InMemoryStorage::default());
 }
-
-static TEST_STORE_INNER: Lazy<RwLock<InMemoryStorage>> =
-    Lazy::new(|| RwLock::new(InMemoryStorage::default()));
 
 static TEST_STORE: Lazy<InMemoryTestStore> = Lazy::new(|| InMemoryTestStore(&TEST_STORE_INNER));
 
@@ -96,7 +67,7 @@ static SET_EXTENSION_HOOK: Lazy<()> =
 /// This function returns a result of UnitTestResult. The outer result indicates whether it
 /// successfully started running the test, and the inner result indicatests whether all tests pass.
 pub fn run_move_unit_tests(
-    path: PathBuf,
+    path: &Path,
     build_config: BuildConfig,
     config: Option<UnitTestingConfig>,
     compute_coverage: bool,
@@ -108,13 +79,16 @@ pub fn run_move_unit_tests(
         .unwrap_or_else(|| UnitTestingConfig::default_with_bound(Some(MAX_UNIT_TEST_INSTRUCTIONS)));
 
     let result = move_cli::base::test::run_move_unit_tests(
-        &path,
+        path,
         build_config,
         UnitTestingConfig {
             report_stacktrace_on_abort: true,
             ..config
         },
-        sui_move_natives::all_natives(/* silent */ false),
+        sui_move_natives::all_natives(
+            /* silent */ false,
+            &ProtocolConfig::get_for_max_version_UNSAFE(),
+        ),
         Some(initial_cost_schedule_for_unit_tests()),
         compute_coverage,
         &mut std::io::stdout(),

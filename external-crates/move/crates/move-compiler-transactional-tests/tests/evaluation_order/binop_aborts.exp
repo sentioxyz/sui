@@ -1,15 +1,17 @@
 processed 8 tasks
 
-task 1 'run'. lines 14-20:
+task 1, lines 14-20:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ABORTED,
     sub_status: Some(2),
-    location: 0x42::test0,
+    location: 0x43::test0,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 1)],
 }
 
-task 2 'run'. lines 22-29:
+task 2, lines 22-29:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ABORTED,
     sub_status: Some(1),
@@ -18,47 +20,52 @@ Error: Function execution failed with VMError: {
     offsets: [(FunctionDefinitionIndex(0), 1)],
 }
 
-task 3 'run'. lines 31-37:
+task 3, lines 31-37:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ARITHMETIC_ERROR,
     sub_status: None,
-    location: 0x42::test2,
+    location: 0x45::test2,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 2)],
 }
 
-task 4 'run'. lines 39-45:
+task 4, lines 39-45:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ARITHMETIC_ERROR,
     sub_status: None,
-    location: 0x42::test3,
+    location: 0x46::test3,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 2)],
 }
 
-task 5 'run'. lines 47-53:
+task 5, lines 47-53:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ABORTED,
     sub_status: Some(0),
-    location: 0x42::test4,
+    location: 0x47::test4,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 1)],
 }
 
-task 6 'run'. lines 55-61:
+task 6, lines 55-61:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ABORTED,
     sub_status: Some(0),
-    location: 0x42::test5,
+    location: 0x48::test5,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 1)],
 }
 
-task 7 'run'. lines 63-69:
+task 7, lines 63-69:
+//# run
 Error: Function execution failed with VMError: {
     major_status: ARITHMETIC_ERROR,
     sub_status: None,
-    location: 0x42::test37,
+    location: 0x49::test37,
     indices: [],
     offsets: [(FunctionDefinitionIndex(0), 2)],
 }

@@ -8,6 +8,8 @@ title: Module `0x3::validator`
 -  [Struct `Validator`](#0x3_validator_Validator)
 -  [Struct `StakingRequestEvent`](#0x3_validator_StakingRequestEvent)
 -  [Struct `UnstakingRequestEvent`](#0x3_validator_UnstakingRequestEvent)
+-  [Struct `ConvertingToFungibleStakedSuiEvent`](#0x3_validator_ConvertingToFungibleStakedSuiEvent)
+-  [Struct `RedeemingFungibleStakedSuiEvent`](#0x3_validator_RedeemingFungibleStakedSuiEvent)
 -  [Constants](#@Constants_0)
 -  [Function `new_metadata`](#0x3_validator_new_metadata)
 -  [Function `new`](#0x3_validator_new)
@@ -15,6 +17,8 @@ title: Module `0x3::validator`
 -  [Function `activate`](#0x3_validator_activate)
 -  [Function `adjust_stake_and_gas_price`](#0x3_validator_adjust_stake_and_gas_price)
 -  [Function `request_add_stake`](#0x3_validator_request_add_stake)
+-  [Function `convert_to_fungible_staked_sui`](#0x3_validator_convert_to_fungible_staked_sui)
+-  [Function `redeem_fungible_staked_sui`](#0x3_validator_redeem_fungible_staked_sui)
 -  [Function `request_add_stake_at_genesis`](#0x3_validator_request_add_stake_at_genesis)
 -  [Function `request_withdraw_stake`](#0x3_validator_request_withdraw_stake)
 -  [Function `request_set_gas_price`](#0x3_validator_request_set_gas_price)
@@ -286,7 +290,7 @@ title: Module `0x3::validator`
  Summary of the validator.
 </dd>
 <dt>
-<code><a href="voting_power.md#0x3_voting_power">voting_power</a>: u64</code>
+<code><a href="voting_power.md#0x3_voting_power">voting_power</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  The voting power of this validator, which might be different from its
@@ -299,7 +303,7 @@ title: Module `0x3::validator`
  The ID of this validator's current valid <code>UnverifiedValidatorOperationCap</code>
 </dd>
 <dt>
-<code>gas_price: u64</code>
+<code>gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  Gas price quote, updated only at end of epoch.
@@ -311,25 +315,25 @@ title: Module `0x3::validator`
  Staking pool for this validator.
 </dd>
 <dt>
-<code>commission_rate: u64</code>
+<code>commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  Commission rate of the validator, in basis point.
 </dd>
 <dt>
-<code>next_epoch_stake: u64</code>
+<code>next_epoch_stake: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  Total amount of stake that would be active in the next epoch.
 </dd>
 <dt>
-<code>next_epoch_gas_price: u64</code>
+<code>next_epoch_gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  This validator's gas price quote for the next epoch.
 </dd>
 <dt>
-<code>next_epoch_commission_rate: u64</code>
+<code>next_epoch_commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  The commission rate of the validator starting the next epoch, in basis point.
@@ -381,13 +385,13 @@ Event emitted when a new stake request is received.
 
 </dd>
 <dt>
-<code>epoch: u64</code>
+<code>epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
 </dd>
 <dt>
-<code>amount: u64</code>
+<code>amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
@@ -433,25 +437,111 @@ Event emitted when a new unstake request is received.
 
 </dd>
 <dt>
-<code>stake_activation_epoch: u64</code>
+<code>stake_activation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
 </dd>
 <dt>
-<code>unstaking_epoch: u64</code>
+<code>unstaking_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
 </dd>
 <dt>
-<code>principal_amount: u64</code>
+<code>principal_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
 </dd>
 <dt>
-<code>reward_amount: u64</code>
+<code>reward_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
+
+<a name="0x3_validator_ConvertingToFungibleStakedSuiEvent"></a>
+
+## Struct `ConvertingToFungibleStakedSuiEvent`
+
+Event emitted when a staked SUI is converted to a fungible staked SUI.
+
+
+<pre><code><b>struct</b> <a href="validator.md#0x3_validator_ConvertingToFungibleStakedSuiEvent">ConvertingToFungibleStakedSuiEvent</a> <b>has</b> <b>copy</b>, drop
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>pool_id: <a href="../sui-framework/object.md#0x2_object_ID">object::ID</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>stake_activation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>staked_sui_principal_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>fungible_staked_sui_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
+
+<a name="0x3_validator_RedeemingFungibleStakedSuiEvent"></a>
+
+## Struct `RedeemingFungibleStakedSuiEvent`
+
+Event emitted when a fungible staked SUI is redeemed.
+
+
+<pre><code><b>struct</b> <a href="validator.md#0x3_validator_RedeemingFungibleStakedSuiEvent">RedeemingFungibleStakedSuiEvent</a> <b>has</b> <b>copy</b>, drop
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>pool_id: <a href="../sui-framework/object.md#0x2_object_ID">object::ID</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>fungible_staked_sui_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>sui_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
 
@@ -471,7 +561,7 @@ Event emitted when a new unstake request is received.
 Function called during non-genesis times.
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_ECalledDuringNonGenesis">ECalledDuringNonGenesis</a>: u64 = 12;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_ECalledDuringNonGenesis">ECalledDuringNonGenesis</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 12;
 </code></pre>
 
 
@@ -481,7 +571,7 @@ Function called during non-genesis times.
 Commission rate set by the validator is higher than the threshold
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_ECommissionRateTooHigh">ECommissionRateTooHigh</a>: u64 = 8;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_ECommissionRateTooHigh">ECommissionRateTooHigh</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 8;
 </code></pre>
 
 
@@ -491,7 +581,7 @@ Commission rate set by the validator is higher than the threshold
 Validator trying to set gas price higher than threshold.
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EGasPriceHigherThanThreshold">EGasPriceHigherThanThreshold</a>: u64 = 102;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EGasPriceHigherThanThreshold">EGasPriceHigherThanThreshold</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 102;
 </code></pre>
 
 
@@ -501,7 +591,7 @@ Validator trying to set gas price higher than threshold.
 Capability code is not valid
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidCap">EInvalidCap</a>: u64 = 101;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidCap">EInvalidCap</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 101;
 </code></pre>
 
 
@@ -511,7 +601,7 @@ Capability code is not valid
 Invalid proof_of_possession field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidProofOfPossession">EInvalidProofOfPossession</a>: u64 = 0;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidProofOfPossession">EInvalidProofOfPossession</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 0;
 </code></pre>
 
 
@@ -521,7 +611,7 @@ Invalid proof_of_possession field in ValidatorMetadata
 Stake amount is invalid or wrong.
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidStakeAmount">EInvalidStakeAmount</a>: u64 = 11;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EInvalidStakeAmount">EInvalidStakeAmount</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 11;
 </code></pre>
 
 
@@ -531,7 +621,7 @@ Stake amount is invalid or wrong.
 Invalid net_address field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidNetAddr">EMetadataInvalidNetAddr</a>: u64 = 4;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidNetAddr">EMetadataInvalidNetAddr</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 4;
 </code></pre>
 
 
@@ -541,7 +631,7 @@ Invalid net_address field in ValidatorMetadata
 Invalid network_pubkey_bytes field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidNetPubkey">EMetadataInvalidNetPubkey</a>: u64 = 2;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidNetPubkey">EMetadataInvalidNetPubkey</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 2;
 </code></pre>
 
 
@@ -551,7 +641,7 @@ Invalid network_pubkey_bytes field in ValidatorMetadata
 Invalid p2p_address field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidP2pAddr">EMetadataInvalidP2pAddr</a>: u64 = 5;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidP2pAddr">EMetadataInvalidP2pAddr</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 5;
 </code></pre>
 
 
@@ -561,7 +651,7 @@ Invalid p2p_address field in ValidatorMetadata
 Invalid primary_address field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidPrimaryAddr">EMetadataInvalidPrimaryAddr</a>: u64 = 6;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidPrimaryAddr">EMetadataInvalidPrimaryAddr</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 6;
 </code></pre>
 
 
@@ -571,7 +661,7 @@ Invalid primary_address field in ValidatorMetadata
 Invalid pubkey_bytes field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidPubkey">EMetadataInvalidPubkey</a>: u64 = 1;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidPubkey">EMetadataInvalidPubkey</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 1;
 </code></pre>
 
 
@@ -581,7 +671,7 @@ Invalid pubkey_bytes field in ValidatorMetadata
 Invalidworker_address field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidWorkerAddr">EMetadataInvalidWorkerAddr</a>: u64 = 7;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidWorkerAddr">EMetadataInvalidWorkerAddr</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 7;
 </code></pre>
 
 
@@ -591,7 +681,7 @@ Invalidworker_address field in ValidatorMetadata
 Invalid worker_pubkey_bytes field in ValidatorMetadata
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidWorkerPubkey">EMetadataInvalidWorkerPubkey</a>: u64 = 3;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EMetadataInvalidWorkerPubkey">EMetadataInvalidWorkerPubkey</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 3;
 </code></pre>
 
 
@@ -601,7 +691,7 @@ Invalid worker_pubkey_bytes field in ValidatorMetadata
 New Capability is not created by the validator itself
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_ENewCapNotCreatedByValidatorItself">ENewCapNotCreatedByValidatorItself</a>: u64 = 100;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_ENewCapNotCreatedByValidatorItself">ENewCapNotCreatedByValidatorItself</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 100;
 </code></pre>
 
 
@@ -611,7 +701,7 @@ New Capability is not created by the validator itself
 Intended validator is not a candidate one.
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_ENotValidatorCandidate">ENotValidatorCandidate</a>: u64 = 10;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_ENotValidatorCandidate">ENotValidatorCandidate</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 10;
 </code></pre>
 
 
@@ -621,7 +711,7 @@ Intended validator is not a candidate one.
 Validator Metadata is too long
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_EValidatorMetadataExceedingLengthLimit">EValidatorMetadataExceedingLengthLimit</a>: u64 = 9;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_EValidatorMetadataExceedingLengthLimit">EValidatorMetadataExceedingLengthLimit</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 9;
 </code></pre>
 
 
@@ -630,7 +720,7 @@ Validator Metadata is too long
 
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_COMMISSION_RATE">MAX_COMMISSION_RATE</a>: u64 = 2000;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_COMMISSION_RATE">MAX_COMMISSION_RATE</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 2000;
 </code></pre>
 
 
@@ -640,7 +730,7 @@ Validator Metadata is too long
 Max gas price a validator can set is 100K MIST.
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_VALIDATOR_GAS_PRICE">MAX_VALIDATOR_GAS_PRICE</a>: u64 = 100000;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_VALIDATOR_GAS_PRICE">MAX_VALIDATOR_GAS_PRICE</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 100000;
 </code></pre>
 
 
@@ -649,7 +739,7 @@ Max gas price a validator can set is 100K MIST.
 
 
 
-<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_VALIDATOR_METADATA_LENGTH">MAX_VALIDATOR_METADATA_LENGTH</a>: u64 = 256;
+<pre><code><b>const</b> <a href="validator.md#0x3_validator_MAX_VALIDATOR_METADATA_LENGTH">MAX_VALIDATOR_METADATA_LENGTH</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 256;
 </code></pre>
 
 
@@ -723,7 +813,7 @@ Max gas price a validator can set is 100K MIST.
 
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_new">new</a>(sui_address: <b>address</b>, protocol_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, network_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, worker_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, proof_of_possession: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, name: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, description: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, image_url: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, project_url: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, net_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, p2p_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, primary_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, worker_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, gas_price: u64, commission_rate: u64, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="validator.md#0x3_validator_Validator">validator::Validator</a>
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_new">new</a>(sui_address: <b>address</b>, protocol_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, network_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, worker_pubkey_bytes: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, proof_of_possession: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, name: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, description: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, image_url: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, project_url: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, net_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, p2p_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, primary_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, worker_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="validator.md#0x3_validator_Validator">validator::Validator</a>
 </code></pre>
 
 
@@ -746,8 +836,8 @@ Max gas price a validator can set is 100K MIST.
     p2p_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
     primary_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
     worker_address: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
-    gas_price: u64,
-    commission_rate: u64,
+    gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
+    commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
     ctx: &<b>mut</b> TxContext
 ): <a href="validator.md#0x3_validator_Validator">Validator</a> {
     <b>assert</b>!(
@@ -804,7 +894,7 @@ Max gas price a validator can set is 100K MIST.
 Deactivate this validator's staking pool
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_deactivate">deactivate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, deactivation_epoch: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_deactivate">deactivate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, deactivation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -813,7 +903,7 @@ Deactivate this validator's staking pool
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_deactivate">deactivate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, deactivation_epoch: u64) {
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_deactivate">deactivate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, deactivation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>) {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.deactivate_staking_pool(deactivation_epoch)
 }
 </code></pre>
@@ -828,7 +918,7 @@ Deactivate this validator's staking pool
 
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_activate">activate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, activation_epoch: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_activate">activate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, activation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -837,7 +927,7 @@ Deactivate this validator's staking pool
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_activate">activate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, activation_epoch: u64) {
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_activate">activate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, activation_epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>) {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.activate_staking_pool(activation_epoch);
 }
 </code></pre>
@@ -913,6 +1003,88 @@ Request to add stake to the validator's staking pool, processed at the end of th
         }
     );
     staked_sui
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x3_validator_convert_to_fungible_staked_sui"></a>
+
+## Function `convert_to_fungible_staked_sui`
+
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_convert_to_fungible_staked_sui">convert_to_fungible_staked_sui</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, staked_sui: <a href="staking_pool.md#0x3_staking_pool_StakedSui">staking_pool::StakedSui</a>, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="staking_pool.md#0x3_staking_pool_FungibleStakedSui">staking_pool::FungibleStakedSui</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_convert_to_fungible_staked_sui">convert_to_fungible_staked_sui</a>(
+    self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>,
+    staked_sui: StakedSui,
+    ctx: &<b>mut</b> TxContext,
+) : FungibleStakedSui {
+    <b>let</b> stake_activation_epoch = staked_sui.stake_activation_epoch();
+    <b>let</b> staked_sui_principal_amount = staked_sui.staked_sui_amount();
+
+    <b>let</b> fungible_staked_sui = self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.<a href="validator.md#0x3_validator_convert_to_fungible_staked_sui">convert_to_fungible_staked_sui</a>(staked_sui, ctx);
+
+    <a href="../sui-framework/event.md#0x2_event_emit">event::emit</a>(
+        <a href="validator.md#0x3_validator_ConvertingToFungibleStakedSuiEvent">ConvertingToFungibleStakedSuiEvent</a> {
+            pool_id: self.<a href="validator.md#0x3_validator_staking_pool_id">staking_pool_id</a>(),
+            stake_activation_epoch,
+            staked_sui_principal_amount,
+            fungible_staked_sui_amount: fungible_staked_sui.value(),
+        }
+    );
+
+    fungible_staked_sui
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x3_validator_redeem_fungible_staked_sui"></a>
+
+## Function `redeem_fungible_staked_sui`
+
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_redeem_fungible_staked_sui">redeem_fungible_staked_sui</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, fungible_staked_sui: <a href="staking_pool.md#0x3_staking_pool_FungibleStakedSui">staking_pool::FungibleStakedSui</a>, ctx: &<a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="../sui-framework/balance.md#0x2_balance_Balance">balance::Balance</a>&lt;<a href="../sui-framework/sui.md#0x2_sui_SUI">sui::SUI</a>&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_redeem_fungible_staked_sui">redeem_fungible_staked_sui</a>(
+    self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>,
+    fungible_staked_sui: FungibleStakedSui,
+    ctx: &TxContext,
+) : Balance&lt;SUI&gt; {
+    <b>let</b> fungible_staked_sui_amount = fungible_staked_sui.value();
+
+    <b>let</b> <a href="../sui-framework/sui.md#0x2_sui">sui</a> = self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.<a href="validator.md#0x3_validator_redeem_fungible_staked_sui">redeem_fungible_staked_sui</a>(fungible_staked_sui, ctx);
+
+    <a href="../sui-framework/event.md#0x2_event_emit">event::emit</a>(
+        <a href="validator.md#0x3_validator_RedeemingFungibleStakedSuiEvent">RedeemingFungibleStakedSuiEvent</a> {
+            pool_id: self.<a href="validator.md#0x3_validator_staking_pool_id">staking_pool_id</a>(),
+            fungible_staked_sui_amount,
+            sui_amount: <a href="../sui-framework/sui.md#0x2_sui">sui</a>.value(),
+        }
+    );
+
+    <a href="../sui-framework/sui.md#0x2_sui">sui</a>
 }
 </code></pre>
 
@@ -1018,7 +1190,7 @@ Request to set new gas price for the next epoch.
 Need to present a <code>ValidatorOperationCap</code>.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_request_set_gas_price">request_set_gas_price</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, verified_cap: <a href="validator_cap.md#0x3_validator_cap_ValidatorOperationCap">validator_cap::ValidatorOperationCap</a>, new_price: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_request_set_gas_price">request_set_gas_price</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, verified_cap: <a href="validator_cap.md#0x3_validator_cap_ValidatorOperationCap">validator_cap::ValidatorOperationCap</a>, new_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -1030,7 +1202,7 @@ Need to present a <code>ValidatorOperationCap</code>.
 <pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_request_set_gas_price">request_set_gas_price</a>(
     self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>,
     verified_cap: ValidatorOperationCap,
-    new_price: u64,
+    new_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
 ) {
     <b>assert</b>!(new_price &lt; <a href="validator.md#0x3_validator_MAX_VALIDATOR_GAS_PRICE">MAX_VALIDATOR_GAS_PRICE</a>, <a href="validator.md#0x3_validator_EGasPriceHigherThanThreshold">EGasPriceHigherThanThreshold</a>);
     <b>let</b> validator_address = *verified_cap.verified_operation_cap_address();
@@ -1050,7 +1222,7 @@ Need to present a <code>ValidatorOperationCap</code>.
 Set new gas price for the candidate validator.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_gas_price">set_candidate_gas_price</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, verified_cap: <a href="validator_cap.md#0x3_validator_cap_ValidatorOperationCap">validator_cap::ValidatorOperationCap</a>, new_price: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_gas_price">set_candidate_gas_price</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, verified_cap: <a href="validator_cap.md#0x3_validator_cap_ValidatorOperationCap">validator_cap::ValidatorOperationCap</a>, new_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -1062,7 +1234,7 @@ Set new gas price for the candidate validator.
 <pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_gas_price">set_candidate_gas_price</a>(
     self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>,
     verified_cap: ValidatorOperationCap,
-    new_price: u64
+    new_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 ) {
     <b>assert</b>!(<a href="validator.md#0x3_validator_is_preactive">is_preactive</a>(self), <a href="validator.md#0x3_validator_ENotValidatorCandidate">ENotValidatorCandidate</a>);
     <b>assert</b>!(new_price &lt; <a href="validator.md#0x3_validator_MAX_VALIDATOR_GAS_PRICE">MAX_VALIDATOR_GAS_PRICE</a>, <a href="validator.md#0x3_validator_EGasPriceHigherThanThreshold">EGasPriceHigherThanThreshold</a>);
@@ -1084,7 +1256,7 @@ Set new gas price for the candidate validator.
 Request to set new commission rate for the next epoch.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_request_set_commission_rate">request_set_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_commission_rate: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_request_set_commission_rate">request_set_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -1093,7 +1265,7 @@ Request to set new commission rate for the next epoch.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_request_set_commission_rate">request_set_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_commission_rate: u64) {
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_request_set_commission_rate">request_set_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>) {
     <b>assert</b>!(new_commission_rate &lt;= <a href="validator.md#0x3_validator_MAX_COMMISSION_RATE">MAX_COMMISSION_RATE</a>, <a href="validator.md#0x3_validator_ECommissionRateTooHigh">ECommissionRateTooHigh</a>);
     self.next_epoch_commission_rate = new_commission_rate;
 }
@@ -1110,7 +1282,7 @@ Request to set new commission rate for the next epoch.
 Set new commission rate for the candidate validator.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_commission_rate">set_candidate_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_commission_rate: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_commission_rate">set_candidate_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -1119,7 +1291,7 @@ Set new commission rate for the candidate validator.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_commission_rate">set_candidate_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_commission_rate: u64) {
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_set_candidate_commission_rate">set_candidate_commission_rate</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>) {
     <b>assert</b>!(<a href="validator.md#0x3_validator_is_preactive">is_preactive</a>(self), <a href="validator.md#0x3_validator_ENotValidatorCandidate">ENotValidatorCandidate</a>);
     <b>assert</b>!(new_commission_rate &lt;= <a href="validator.md#0x3_validator_MAX_COMMISSION_RATE">MAX_COMMISSION_RATE</a>, <a href="validator.md#0x3_validator_ECommissionRateTooHigh">ECommissionRateTooHigh</a>);
     self.commission_rate = new_commission_rate;
@@ -1765,7 +1937,7 @@ Returns true if the validator is preactive.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_next_epoch_gas_price">next_epoch_gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_next_epoch_gas_price">next_epoch_gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1774,7 +1946,7 @@ Returns true if the validator is preactive.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_next_epoch_gas_price">next_epoch_gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_next_epoch_gas_price">next_epoch_gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.next_epoch_gas_price
 }
 </code></pre>
@@ -1789,7 +1961,7 @@ Returns true if the validator is preactive.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake_amount">total_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake_amount">total_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1798,7 +1970,7 @@ Returns true if the validator is preactive.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake_amount">total_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake_amount">total_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.sui_balance()
 }
 </code></pre>
@@ -1813,7 +1985,7 @@ Returns true if the validator is preactive.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_stake_amount">stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_stake_amount">stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1822,7 +1994,7 @@ Returns true if the validator is preactive.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_stake_amount">stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_stake_amount">stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.sui_balance()
 }
 </code></pre>
@@ -1838,7 +2010,7 @@ Returns true if the validator is preactive.
 Return the total amount staked with this validator
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake">total_stake</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake">total_stake</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1847,7 +2019,7 @@ Return the total amount staked with this validator
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake">total_stake</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_total_stake">total_stake</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     <a href="validator.md#0x3_validator_stake_amount">stake_amount</a>(self)
 }
 </code></pre>
@@ -1863,7 +2035,7 @@ Return the total amount staked with this validator
 Return the voting power of this validator.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="voting_power.md#0x3_voting_power">voting_power</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="voting_power.md#0x3_voting_power">voting_power</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1872,7 +2044,7 @@ Return the voting power of this validator.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="voting_power.md#0x3_voting_power">voting_power</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="voting_power.md#0x3_voting_power">voting_power</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.<a href="voting_power.md#0x3_voting_power">voting_power</a>
 }
 </code></pre>
@@ -1888,7 +2060,7 @@ Return the voting power of this validator.
 Set the voting power of this validator, called only from validator_set.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_voting_power">set_voting_power</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_voting_power: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="validator.md#0x3_validator_set_voting_power">set_voting_power</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">validator::Validator</a>, new_voting_power: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
 </code></pre>
 
 
@@ -1897,7 +2069,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_set_voting_power">set_voting_power</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_voting_power: u64) {
+<pre><code><b>public</b>(package) <b>fun</b> <a href="validator.md#0x3_validator_set_voting_power">set_voting_power</a>(self: &<b>mut</b> <a href="validator.md#0x3_validator_Validator">Validator</a>, new_voting_power: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>) {
     self.<a href="voting_power.md#0x3_voting_power">voting_power</a> = new_voting_power;
 }
 </code></pre>
@@ -1912,7 +2084,7 @@ Set the voting power of this validator, called only from validator_set.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_amount">pending_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_amount">pending_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1921,7 +2093,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_amount">pending_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_amount">pending_stake_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.<a href="validator.md#0x3_validator_pending_stake_amount">pending_stake_amount</a>()
 }
 </code></pre>
@@ -1936,7 +2108,7 @@ Set the voting power of this validator, called only from validator_set.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_withdraw_amount">pending_stake_withdraw_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_withdraw_amount">pending_stake_withdraw_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1945,7 +2117,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_withdraw_amount">pending_stake_withdraw_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pending_stake_withdraw_amount">pending_stake_withdraw_amount</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.<a href="validator.md#0x3_validator_pending_stake_withdraw_amount">pending_stake_withdraw_amount</a>()
 }
 </code></pre>
@@ -1960,7 +2132,7 @@ Set the voting power of this validator, called only from validator_set.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_gas_price">gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_gas_price">gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1969,7 +2141,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_gas_price">gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_gas_price">gas_price</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.gas_price
 }
 </code></pre>
@@ -1984,7 +2156,7 @@ Set the voting power of this validator, called only from validator_set.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_commission_rate">commission_rate</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_commission_rate">commission_rate</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -1993,7 +2165,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_commission_rate">commission_rate</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_commission_rate">commission_rate</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     self.commission_rate
 }
 </code></pre>
@@ -2008,7 +2180,7 @@ Set the voting power of this validator, called only from validator_set.
 
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pool_token_exchange_rate_at_epoch">pool_token_exchange_rate_at_epoch</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>, epoch: u64): <a href="staking_pool.md#0x3_staking_pool_PoolTokenExchangeRate">staking_pool::PoolTokenExchangeRate</a>
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pool_token_exchange_rate_at_epoch">pool_token_exchange_rate_at_epoch</a>(self: &<a href="validator.md#0x3_validator_Validator">validator::Validator</a>, epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>): <a href="staking_pool.md#0x3_staking_pool_PoolTokenExchangeRate">staking_pool::PoolTokenExchangeRate</a>
 </code></pre>
 
 
@@ -2017,7 +2189,7 @@ Set the voting power of this validator, called only from validator_set.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pool_token_exchange_rate_at_epoch">pool_token_exchange_rate_at_epoch</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>, epoch: u64): PoolTokenExchangeRate {
+<pre><code><b>public</b> <b>fun</b> <a href="validator.md#0x3_validator_pool_token_exchange_rate_at_epoch">pool_token_exchange_rate_at_epoch</a>(self: &<a href="validator.md#0x3_validator_Validator">Validator</a>, epoch: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>): PoolTokenExchangeRate {
     self.<a href="staking_pool.md#0x3_staking_pool">staking_pool</a>.<a href="validator.md#0x3_validator_pool_token_exchange_rate_at_epoch">pool_token_exchange_rate_at_epoch</a>(epoch)
 }
 </code></pre>
@@ -2860,7 +3032,7 @@ Aborts if validator metadata is valid
 Create a new validator from the given <code><a href="validator.md#0x3_validator_ValidatorMetadata">ValidatorMetadata</a></code>, called by both <code>new</code> and <code>new_for_testing</code>.
 
 
-<pre><code><b>fun</b> <a href="validator.md#0x3_validator_new_from_metadata">new_from_metadata</a>(metadata: <a href="validator.md#0x3_validator_ValidatorMetadata">validator::ValidatorMetadata</a>, gas_price: u64, commission_rate: u64, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="validator.md#0x3_validator_Validator">validator::Validator</a>
+<pre><code><b>fun</b> <a href="validator.md#0x3_validator_new_from_metadata">new_from_metadata</a>(metadata: <a href="validator.md#0x3_validator_ValidatorMetadata">validator::ValidatorMetadata</a>, gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="validator.md#0x3_validator_Validator">validator::Validator</a>
 </code></pre>
 
 
@@ -2871,8 +3043,8 @@ Create a new validator from the given <code><a href="validator.md#0x3_validator_
 
 <pre><code><b>fun</b> <a href="validator.md#0x3_validator_new_from_metadata">new_from_metadata</a>(
     metadata: <a href="validator.md#0x3_validator_ValidatorMetadata">ValidatorMetadata</a>,
-    gas_price: u64,
-    commission_rate: u64,
+    gas_price: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
+    commission_rate: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
     ctx: &<b>mut</b> TxContext
 ): <a href="validator.md#0x3_validator_Validator">Validator</a> {
     <b>let</b> sui_address = metadata.sui_address;

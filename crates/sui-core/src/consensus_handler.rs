@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    hash::{Hash, Hasher},
+    collections::{HashMap, HashSet},
+    hash::Hash,
     num::NonZeroUsize,
     sync::Arc,
 };
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
+use consensus_config::Committee as ConsensusCommittee;
+use consensus_core::CommitConsumerMonitor;
 use lru::LruCache;
-use mysten_metrics::{monitored_scope, spawn_monitored_task};
-use narwhal_config::Committee;
-use narwhal_executor::{ExecutionIndices, ExecutionState};
-use narwhal_types::ConsensusOutput;
+use mysten_metrics::{monitored_mpsc::UnboundedReceiver, monitored_scope, spawn_monitored_task};
 use serde::{Deserialize, Serialize};
 use sui_macros::{fail_point_async, fail_point_if};
 use sui_protocol_config::ProtocolConfig;
@@ -27,21 +25,20 @@ use sui_types::{
     sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait,
     transaction::{SenderSignedData, VerifiedTransaction},
 };
-use tracing::{debug, error, info, instrument, trace_span};
+use tracing::{debug, error, info, instrument, trace_span, warn};
 
 use crate::{
     authority::{
         authority_per_epoch_store::{
-            AuthorityPerEpochStore, ConsensusStats, ConsensusStatsAPI, ExecutionIndicesWithStats,
+            AuthorityPerEpochStore, ConsensusStats, ConsensusStatsAPI, ExecutionIndices,
+            ExecutionIndicesWithStats,
         },
         epoch_start_configuration::EpochStartConfigTrait,
         AuthorityMetrics, AuthorityState,
     },
     checkpoints::{CheckpointService, CheckpointServiceNotify},
     consensus_throughput_calculator::ConsensusThroughputCalculator,
-    consensus_types::{
-        committee_api::CommitteeAPI, consensus_output_api::ConsensusOutputAPI, AuthorityIndex,
-    },
+    consensus_types::{consensus_output_api::ConsensusOutputAPI, AuthorityIndex},
     execution_cache::ObjectCacheRead,
     scoring_decision::update_low_scoring_authorities,
     transaction_manager::TransactionManager,
@@ -87,9 +84,10 @@ impl ConsensusHandlerInitializer {
             )),
         }
     }
+
     pub fn new_consensus_handler(&self) -> ConsensusHandler<CheckpointService> {
         let new_epoch_start_state = self.epoch_store.epoch_start_state();
-        let committee = new_epoch_start_state.get_narwhal_committee();
+        let consensus_committee = new_epoch_start_state.get_consensus_committee();
 
         ConsensusHandler::new(
             self.epoch_store.clone(),
@@ -97,7 +95,7 @@ impl ConsensusHandlerInitializer {
             self.state.transaction_manager().clone(),
             self.state.get_object_cache_reader().clone(),
             self.low_scoring_authorities.clone(),
-            committee,
+            consensus_committee,
             self.state.metrics.clone(),
             self.throughput_calculator.clone(),
         )
@@ -117,8 +115,8 @@ pub struct ConsensusHandler<C> {
     cache_reader: Arc<dyn ObjectCacheRead>,
     /// Reputation scores used by consensus adapter that we update, forwarded from consensus
     low_scoring_authorities: Arc<ArcSwap<HashMap<AuthorityName, u64>>>,
-    /// The narwhal committee used to do stake computations for deciding set of low scoring authorities
-    committee: Committee,
+    /// The consensus committee used to do stake computations for deciding set of low scoring authorities
+    committee: ConsensusCommittee,
     // TODO: ConsensusHandler doesn't really share metrics with AuthorityState. We could define
     // a new metrics type here if we want to.
     metrics: Arc<AuthorityMetrics>,
@@ -138,7 +136,7 @@ impl<C> ConsensusHandler<C> {
         transaction_manager: Arc<TransactionManager>,
         cache_reader: Arc<dyn ObjectCacheRead>,
         low_scoring_authorities: Arc<ArcSwap<HashMap<AuthorityName, u64>>>,
-        committee: Committee,
+        committee: ConsensusCommittee,
         metrics: Arc<AuthorityMetrics>,
         throughput_calculator: Arc<ConsensusThroughputCalculator>,
     ) -> Self {
@@ -166,63 +164,17 @@ impl<C> ConsensusHandler<C> {
         }
     }
 
-    /// Updates the execution indexes based on the provided input.
-    fn update_index_and_hash(&mut self, index: ExecutionIndices, v: &[u8]) {
-        update_index_and_hash(&mut self.last_consensus_stats, index, v)
-    }
-}
-
-fn update_index_and_hash(
-    last_consensus_stats: &mut ExecutionIndicesWithStats,
-    index: ExecutionIndices,
-    v: &[u8],
-) {
-    // The entry point of handle_consensus_output_internal() has filtered out any already processed
-    // consensus output. So we can safely assume that the index is always increasing.
-    assert!(last_consensus_stats.index < index);
-
-    let previous_hash = last_consensus_stats.hash;
-    let mut hasher = DefaultHasher::new();
-    previous_hash.hash(&mut hasher);
-    v.hash(&mut hasher);
-    let hash = hasher.finish();
-    // Log hash every 1000th transaction of the subdag
-    if index.transaction_index % 1000 == 0 {
-        info!(
-            "Integrity hash for consensus output at subdag {} transaction {} is {:016x}",
-            index.sub_dag_index, index.transaction_index, hash
-        );
-    }
-
-    last_consensus_stats.index = index;
-    last_consensus_stats.hash = hash;
-}
-
-#[async_trait]
-impl<C: CheckpointServiceNotify + Send + Sync> ExecutionState for ConsensusHandler<C> {
-    /// This function gets called by the consensus for each consensus commit.
-    #[instrument(level = "debug", skip_all)]
-    async fn handle_consensus_output(&mut self, consensus_output: ConsensusOutput) {
-        let _scope = monitored_scope("HandleConsensusOutput");
-        self.handle_consensus_output_internal(consensus_output)
-            .await;
-    }
-
-    fn last_executed_sub_dag_round(&self) -> u64 {
-        self.last_consensus_stats.index.last_committed_round
-    }
-
-    fn last_executed_sub_dag_index(&self) -> u64 {
+    /// Returns the last subdag index processed by the handler.
+    pub fn last_processed_subdag_index(&self) -> u64 {
         self.last_consensus_stats.index.sub_dag_index
     }
 }
 
 impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
     #[instrument(level = "debug", skip_all)]
-    async fn handle_consensus_output_internal(
-        &mut self,
-        consensus_output: impl ConsensusOutputAPI,
-    ) {
+    async fn handle_consensus_output(&mut self, consensus_output: impl ConsensusOutputAPI) {
+        let _scope = monitored_scope("HandleConsensusOutput");
+
         // This code no longer supports old protocol versions.
         assert!(self
             .epoch_store
@@ -233,13 +185,15 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
 
         let round = consensus_output.leader_round();
 
+        // TODO: Remove this once narwhal is deprecated. For now mysticeti will not return
+        // more than one leader per round so we are not in danger of ignoring any commits.
         assert!(round >= last_committed_round);
         if last_committed_round == round {
             // we can receive the same commit twice after restart
             // It is critical that the writes done by this function are atomic - otherwise we can
             // lose the later parts of a commit if we restart midway through processing it.
-            info!(
-                "Ignoring consensus output for round {} as it is already committed",
+            warn!(
+                "Ignoring consensus output for round {} as it is already committed. NOTE: This is only expected if consensus is running.",
                 round
             );
             return;
@@ -270,18 +224,19 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
             "Received consensus output"
         );
 
-        // TODO: testing empty commit explicitly.
+        let execution_index = ExecutionIndices {
+            last_committed_round: round,
+            sub_dag_index: commit_sub_dag_index,
+            transaction_index: 0_u64,
+        };
+        // This function has filtered out any already processed consensus output.
+        // So we can safely assume that the index is always increasing.
+        assert!(self.last_consensus_stats.index < execution_index);
+
+        // TODO: test empty commit explicitly.
         // Note that consensus commit batch may contain no transactions, but we still need to record the current
         // round and subdag index in the last_consensus_stats, so that it won't be re-executed in the future.
-        let empty_bytes = vec![];
-        self.update_index_and_hash(
-            ExecutionIndices {
-                last_committed_round: round,
-                sub_dag_index: commit_sub_dag_index,
-                transaction_index: 0_u64,
-            },
-            &empty_bytes,
-        );
+        self.last_consensus_stats.index = execution_index;
 
         // Load all jwks that became active in the previous round, and commit them in this round.
         // We want to delay one round because none of the transactions in the previous round could
@@ -305,7 +260,6 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
             );
 
             transactions.push((
-                empty_bytes.as_slice(),
                 SequencedConsensusTransactionKind::System(authenticator_state_update_transaction),
                 leader_author,
             ));
@@ -313,6 +267,7 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
 
         update_low_scoring_authorities(
             self.low_scoring_authorities.clone(),
+            self.epoch_store.committee(),
             &self.committee,
             consensus_output.reputation_score_sorted_desc(),
             &self.metrics,
@@ -334,7 +289,7 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
                 self.last_consensus_stats
                     .stats
                     .inc_num_messages(authority_index as usize);
-                for (serialized_transaction, transaction) in authority_transactions {
+                for (transaction, serialized_len) in authority_transactions {
                     let kind = classify(&transaction);
                     self.metrics
                         .consensus_handler_processed
@@ -343,10 +298,10 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
                     self.metrics
                         .consensus_handler_transaction_sizes
                         .with_label_values(&[kind])
-                        .observe(serialized_transaction.len() as f64);
+                        .observe(serialized_len as f64);
                     if matches!(
                         &transaction.kind,
-                        ConsensusTransactionKind::UserTransaction(_)
+                        ConsensusTransactionKind::CertifiedTransaction(_)
                     ) {
                         self.last_consensus_stats
                             .stats
@@ -359,25 +314,26 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
                         error!("BUG: saw deprecated RandomnessStateUpdate tx for commit round {round:?}, randomness round {randomness_round:?}")
                     } else {
                         let transaction = SequencedConsensusTransactionKind::External(transaction);
-                        transactions.push((serialized_transaction, transaction, authority_index));
+                        transactions.push((transaction, authority_index));
                     }
                 }
             }
         }
 
-        for i in 0..self.committee.size() {
-            let hostname = self
-                .committee
-                .authority_hostname_by_index(i as AuthorityIndex)
-                .unwrap_or_default();
+        for (i, authority) in self.committee.authorities() {
+            let hostname = &authority.hostname;
             self.metrics
                 .consensus_committed_messages
                 .with_label_values(&[hostname])
-                .set(self.last_consensus_stats.stats.get_num_messages(i) as i64);
+                .set(self.last_consensus_stats.stats.get_num_messages(i.value()) as i64);
             self.metrics
                 .consensus_committed_user_transactions
                 .with_label_values(&[hostname])
-                .set(self.last_consensus_stats.stats.get_num_user_transactions(i) as i64);
+                .set(
+                    self.last_consensus_stats
+                        .stats
+                        .get_num_user_transactions(i.value()) as i64,
+                );
         }
 
         let mut all_transactions = Vec::new();
@@ -386,9 +342,7 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
             // entries while we're iterating over the sequenced transactions.
             let mut processed_set = HashSet::new();
 
-            for (seq, (serialized, transaction, cert_origin)) in
-                transactions.into_iter().enumerate()
-            {
+            for (seq, (transaction, cert_origin)) in transactions.into_iter().enumerate() {
                 // In process_consensus_transactions_and_commit_boundary(), we will add a system consensus commit
                 // prologue transaction, which will be the first transaction in this consensus commit batch.
                 // Therefore, the transaction sequence number starts from 1 here.
@@ -398,11 +352,12 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
                     transaction_index: (seq + 1) as u64,
                 };
 
-                self.update_index_and_hash(current_tx_index, serialized);
+                self.last_consensus_stats.index = current_tx_index;
 
-                let certificate_author = self
-                    .committee
-                    .authority_pubkey_by_index(cert_origin)
+                let certificate_author = *self
+                    .epoch_store
+                    .committee()
+                    .authority_by_index(cert_origin)
                     .unwrap();
 
                 let sequenced_transaction = SequencedConsensusTransaction {
@@ -501,13 +456,17 @@ pub struct MysticetiConsensusHandler {
 impl MysticetiConsensusHandler {
     pub fn new(
         mut consensus_handler: ConsensusHandler<CheckpointService>,
-        mut receiver: tokio::sync::mpsc::UnboundedReceiver<consensus_core::CommittedSubDag>,
+        mut receiver: UnboundedReceiver<consensus_core::CommittedSubDag>,
+        commit_consumer_monitor: Arc<CommitConsumerMonitor>,
     ) -> Self {
         let handle = spawn_monitored_task!(async move {
+            // TODO: pause when execution is overloaded, so consensus can detect the backpressure.
             while let Some(consensus_output) = receiver.recv().await {
+                let commit_index = consensus_output.commit_ref.index;
                 consensus_handler
-                    .handle_consensus_output_internal(consensus_output)
+                    .handle_consensus_output(consensus_output)
                     .await;
+                commit_consumer_monitor.set_highest_handled_commit(commit_index);
             }
         });
         Self {
@@ -560,7 +519,7 @@ impl<C> ConsensusHandler<C> {
 
 pub(crate) fn classify(transaction: &ConsensusTransaction) -> &'static str {
     match &transaction.kind {
-        ConsensusTransactionKind::UserTransaction(certificate) => {
+        ConsensusTransactionKind::CertifiedTransaction(certificate) => {
             if certificate.contains_shared_object() {
                 "shared_certificate"
             } else {
@@ -570,10 +529,18 @@ pub(crate) fn classify(transaction: &ConsensusTransaction) -> &'static str {
         ConsensusTransactionKind::CheckpointSignature(_) => "checkpoint_signature",
         ConsensusTransactionKind::EndOfPublish(_) => "end_of_publish",
         ConsensusTransactionKind::CapabilityNotification(_) => "capability_notification",
+        ConsensusTransactionKind::CapabilityNotificationV2(_) => "capability_notification_v2",
         ConsensusTransactionKind::NewJWKFetched(_, _, _) => "new_jwk_fetched",
         ConsensusTransactionKind::RandomnessStateUpdate(_, _) => "randomness_state_update",
         ConsensusTransactionKind::RandomnessDkgMessage(_, _) => "randomness_dkg_message",
         ConsensusTransactionKind::RandomnessDkgConfirmation(_, _) => "randomness_dkg_confirmation",
+        ConsensusTransactionKind::UserTransaction(tx) => {
+            if tx.contains_shared_object() {
+                "shared_user_transaction"
+            } else {
+                "owned_user_transaction"
+            }
+        }
     }
 }
 
@@ -641,7 +608,7 @@ impl From<SerializableSequencedConsensusTransactionKind> for SequencedConsensusT
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Hash, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub enum SequencedConsensusTransactionKey {
     External(ConsensusTransactionKey),
     System(TransactionDigest),
@@ -668,7 +635,7 @@ impl SequencedConsensusTransactionKind {
 
     pub fn is_executable_transaction(&self) -> bool {
         match self {
-            SequencedConsensusTransactionKind::External(ext) => ext.is_user_certificate(),
+            SequencedConsensusTransactionKind::External(ext) => ext.is_certified_transaction(),
             SequencedConsensusTransactionKind::System(_) => true,
         }
     }
@@ -676,7 +643,7 @@ impl SequencedConsensusTransactionKind {
     pub fn executable_transaction_digest(&self) -> Option<TransactionDigest> {
         match self {
             SequencedConsensusTransactionKind::External(ext) => {
-                if let ConsensusTransactionKind::UserTransaction(txn) = &ext.kind {
+                if let ConsensusTransactionKind::CertifiedTransaction(txn) = &ext.kind {
                     Some(*txn.digest())
                 } else {
                     None
@@ -727,7 +694,7 @@ impl SequencedConsensusTransaction {
             return false;
         }
         let SequencedConsensusTransactionKind::External(ConsensusTransaction {
-            kind: ConsensusTransactionKind::UserTransaction(certificate),
+            kind: ConsensusTransactionKind::CertifiedTransaction(certificate),
             ..
         }) = &self.transaction
         else {
@@ -739,7 +706,7 @@ impl SequencedConsensusTransaction {
     pub fn as_shared_object_txn(&self) -> Option<&SenderSignedData> {
         match &self.transaction {
             SequencedConsensusTransactionKind::External(ConsensusTransaction {
-                kind: ConsensusTransactionKind::UserTransaction(certificate),
+                kind: ConsensusTransactionKind::CertifiedTransaction(certificate),
                 ..
             }) if certificate.contains_shared_object() => Some(certificate.data()),
             SequencedConsensusTransactionKind::System(txn) if txn.contains_shared_object() => {
@@ -864,21 +831,19 @@ impl ConsensusCommitInfo {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
-    use narwhal_config::AuthorityIdentifier;
-    use narwhal_test_utils::latest_protocol_version;
-    use narwhal_types::{Batch, Certificate, CommittedSubDag, HeaderV1Builder, ReputationScores};
+    use consensus_core::{
+        BlockAPI, CommitDigest, CommitRef, CommittedSubDag, TestBlock, Transaction, VerifiedBlock,
+    };
     use prometheus::Registry;
-    use sui_protocol_config::{ConsensusTransactionOrdering, SupportedProtocolVersions};
+    use sui_protocol_config::ConsensusTransactionOrdering;
     use sui_types::{
         base_types::{random_object_ref, AuthorityName, SuiAddress},
         committee::Committee,
         messages_consensus::{
-            AuthorityCapabilities, ConsensusTransaction, ConsensusTransactionKind,
+            AuthorityCapabilitiesV1, ConsensusTransaction, ConsensusTransactionKind,
         },
         object::Object,
-        sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait,
+        supported_protocol_versions::SupportedProtocolVersions,
         transaction::{
             CertifiedTransaction, SenderSignedData, TransactionData, TransactionDataAPI,
         },
@@ -902,21 +867,19 @@ mod tests {
         let shared_object = Object::shared_for_testing();
         objects.push(shared_object.clone());
 
-        let latest_protocol_config = &latest_protocol_version();
-
         let network_config =
             sui_swarm_config::network_config_builder::ConfigBuilder::new_with_temp_dir()
                 .with_objects(objects.clone())
                 .build();
 
         let state = TestAuthorityBuilder::new()
-            .with_network_config(&network_config)
+            .with_network_config(&network_config, 0)
             .build()
             .await;
 
         let epoch_store = state.epoch_store_for_testing().clone();
         let new_epoch_start_state = epoch_store.epoch_start_state();
-        let committee = new_epoch_start_state.get_narwhal_committee();
+        let consensus_committee = new_epoch_start_state.get_consensus_committee();
 
         let metrics = Arc::new(AuthorityMetrics::new(&Registry::new()));
 
@@ -928,7 +891,7 @@ mod tests {
             state.transaction_manager().clone(),
             state.get_object_cache_reader().clone(),
             Arc::new(ArcSwap::default()),
-            committee.clone(),
+            consensus_committee.clone(),
             metrics,
             Arc::new(throughput_calculator),
         );
@@ -936,59 +899,41 @@ mod tests {
         // AND
         // Create test transactions
         let transactions = test_certificates(&state, shared_object).await;
-        let mut certificates = Vec::new();
-        let mut batches = Vec::new();
+        let mut blocks = Vec::new();
 
-        for transaction in transactions.iter() {
+        for (i, transaction) in transactions.iter().enumerate() {
             let transaction_bytes: Vec<u8> = bcs::to_bytes(
                 &ConsensusTransaction::new_certificate_message(&state.name, transaction.clone()),
             )
             .unwrap();
 
-            let batch = Batch::new(vec![transaction_bytes], latest_protocol_config);
+            // AND create block for each transaction
+            let block = VerifiedBlock::new_for_test(
+                TestBlock::new(100 + i as u32, (i % consensus_committee.size()) as u32)
+                    .set_transactions(vec![Transaction::new(transaction_bytes)])
+                    .build(),
+            );
 
-            batches.push(vec![batch.clone()]);
-
-            // AND make batch as part of a commit
-            let header = HeaderV1Builder::default()
-                .author(AuthorityIdentifier(0))
-                .round(5)
-                .epoch(0)
-                .parents(BTreeSet::new())
-                .with_payload_batch(batch.clone(), 0, 0)
-                .build()
-                .unwrap();
-
-            let certificate = Certificate::new_unsigned(
-                latest_protocol_config,
-                &committee,
-                header.into(),
-                vec![],
-            )
-            .unwrap();
-
-            certificates.push(certificate);
+            blocks.push(block);
         }
 
         // AND create the consensus output
-        let consensus_output = ConsensusOutput {
-            sub_dag: Arc::new(CommittedSubDag::new(
-                certificates.clone(),
-                certificates[0].clone(),
-                10,
-                ReputationScores::default(),
-                None,
-            )),
-            batches,
-        };
+        let leader_block = blocks[0].clone();
+        let committed_sub_dag = CommittedSubDag::new(
+            leader_block.reference(),
+            blocks.clone(),
+            leader_block.timestamp_ms(),
+            CommitRef::new(10, CommitDigest::MIN),
+            vec![],
+        );
 
         // AND processing the consensus output once
         consensus_handler
-            .handle_consensus_output(consensus_output.clone())
+            .handle_consensus_output(committed_sub_dag.clone())
             .await;
 
         // AND capturing the consensus stats
-        let num_certificates = certificates.len();
+        let num_blocks = blocks.len();
         let num_transactions = transactions.len();
         let last_consensus_stats_1 = consensus_handler.last_consensus_stats.clone();
         assert_eq!(
@@ -996,11 +941,11 @@ mod tests {
             num_transactions as u64
         );
         assert_eq!(last_consensus_stats_1.index.sub_dag_index, 10_u64);
-        assert_eq!(last_consensus_stats_1.index.last_committed_round, 5_u64);
-        assert_ne!(last_consensus_stats_1.hash, 0);
+        assert_eq!(last_consensus_stats_1.index.last_committed_round, 100_u64);
+        assert_eq!(last_consensus_stats_1.hash, 0);
         assert_eq!(
             last_consensus_stats_1.stats.get_num_messages(0),
-            num_certificates as u64
+            num_blocks as u64
         );
         assert_eq!(
             last_consensus_stats_1.stats.get_num_user_transactions(0),
@@ -1011,36 +956,11 @@ mod tests {
         // THEN the consensus stats do not update
         for _ in 0..2 {
             consensus_handler
-                .handle_consensus_output(consensus_output.clone())
+                .handle_consensus_output(committed_sub_dag.clone())
                 .await;
             let last_consensus_stats_2 = consensus_handler.last_consensus_stats.clone();
             assert_eq!(last_consensus_stats_1, last_consensus_stats_2);
         }
-    }
-
-    #[test]
-    pub fn test_update_index_and_hash() {
-        let index0 = ExecutionIndices {
-            sub_dag_index: 0,
-            transaction_index: 5,
-            last_committed_round: 0,
-        };
-        let index1 = ExecutionIndices {
-            sub_dag_index: 1,
-            transaction_index: 2,
-            last_committed_round: 3,
-        };
-
-        let mut last_seen = ExecutionIndicesWithStats {
-            index: index0,
-            hash: 1000,
-            stats: ConsensusStats::default(),
-        };
-
-        let tx = &[0];
-        update_index_and_hash(&mut last_seen, index1, tx);
-        assert_eq!(last_seen.index, index1);
-        assert_ne!(last_seen.hash, 1000);
     }
 
     #[test]
@@ -1116,7 +1036,7 @@ mod tests {
                 ConsensusTransactionKind::CapabilityNotification(cap) => {
                     format!("cap({})", cap.generation)
                 }
-                ConsensusTransactionKind::UserTransaction(txn) => {
+                ConsensusTransactionKind::CertifiedTransaction(txn) => {
                     format!("user({})", txn.transaction_data().gas_price())
                 }
                 _ => unreachable!(),
@@ -1133,7 +1053,7 @@ mod tests {
 
     fn cap_txn(generation: u64) -> VerifiedSequencedConsensusTransaction {
         txn(ConsensusTransactionKind::CapabilityNotification(
-            AuthorityCapabilities {
+            AuthorityCapabilitiesV1 {
                 authority: Default::default(),
                 generation,
                 supported_protocol_versions: SupportedProtocolVersions::SYSTEM_DEFAULT,
@@ -1155,7 +1075,7 @@ mod tests {
             ),
             vec![],
         );
-        txn(ConsensusTransactionKind::UserTransaction(Box::new(
+        txn(ConsensusTransactionKind::CertifiedTransaction(Box::new(
             CertifiedTransaction::new_from_keypairs_for_testing(data, &keypairs, &committee),
         )))
     }

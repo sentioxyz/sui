@@ -3,12 +3,13 @@
 
 const fs = require("fs");
 const path = require("path");
+const utils = require("./utils.js");
 
 const addCodeInject = function (source) {
   let fileString = source;
   const callback = this.async();
-
   const options = this.getOptions();
+
   const markdownFilename = path.basename(this.resourcePath);
   const repoPath = path.join(__dirname, "../../../../..");
 
@@ -20,31 +21,26 @@ const addCodeInject = function (source) {
 
   function addMarkdownIncludes(fileContent) {
     let res = fileContent;
-    const matches = fileContent.match(/\{@\w+: .+\}/g);
+    const matches = fileContent.match(/(?<!`)\{@\w+: .+\}/g);
     if (matches) {
       matches.forEach((match) => {
         const replacer = new RegExp(match, "g");
         const key = "{@inject: ";
-        // {@inject: code.move#function=sword_create}
+
         if (match.startsWith(key)) {
-          const injectFileFull = match.substring(key.length, match.length - 1);
-          const injectFile = injectFileFull.substring(
-            0,
-            injectFileFull.indexOf("#") > 0
-              ? injectFileFull.indexOf("#")
-              : injectFileFull.length,
-          );
+          const parts = match.split(" ");
+          const [, , ...options] = parts.length > 2 ? parts : [];
+          let injectFileFull = parts[1].replace(/\}$/, "");
+
+          const injectFile = injectFileFull.split("#")[0];
+
           let fileExt = injectFile.substring(injectFile.lastIndexOf(".") + 1);
           let language = "";
           const fullPath = path.join(repoPath, injectFile);
 
-          // Assuming rust manifests and locks never being used
           switch (fileExt) {
-            case "toml":
-              language = "move";
-              break;
             case "lock":
-              language = "move";
+              language = "toml";
               break;
             case "sh":
               language = "shell";
@@ -55,9 +51,18 @@ const addCodeInject = function (source) {
             case "tsx":
               language = "ts";
               break;
+            case "rs":
+              language = "rust";
+              break;
+            case "prisma":
+              language = "ts";
+              break;
             default:
               language = fileExt;
           }
+
+          const isMove = language === "move";
+          const isTs = language === "ts" || language === "js";
 
           if (fs.existsSync(fullPath)) {
             let injectFileContent = fs.readFileSync(fullPath, "utf8");
@@ -67,81 +72,330 @@ const addCodeInject = function (source) {
                 : null;
 
             if (marker) {
-              const checkBracesBalance = (str) => {
-                const openBraces = str.match(/{/g) || [];
-                const closeBraces = str.match(/}/g) || [];
-
-                return openBraces.length === closeBraces.length;
-              };
-              //const removeLeadingSpaces = (str, numSpaces) => {
-
-              const removeLeadingSpaces = (matchArray, prepend = "") => {
-                const numSpaces = matchArray[1] ? matchArray[1].length - 1 : 0;
-                if (numSpaces === 0) {
-                  return prepend + matchArray[0];
-                }
-                const lines = matchArray[0].split("\n");
-
-                return [
-                  prepend,
-                  lines.map((line) => line.substring(numSpaces)).join("\n"),
-                ].join("\n");
-              };
-              const funKey = "#function=";
+              const funKey = "#fun=";
               const structKey = "#struct=";
-              const funName =
-                marker.indexOf(funKey) >= 0
-                  ? marker
-                      .substring(marker.indexOf(funKey) + funKey.length)
-                      .trim()
+              const moduleKey = "#module=";
+              const varKey = "#variable=";
+              const useKey = "#use=";
+              const componentKey = "#component=";
+              const enumKey = "#enum=";
+              const typeKey = "#type=";
+              const getName = (mark, key) => {
+                return mark.indexOf(key, mark) >= 0
+                  ? mark.substring(mark.indexOf(key) + key.length).trim()
                   : null;
-              const structName =
-                marker.indexOf(structKey) >= 0
-                  ? marker
-                      .substring(marker.indexOf(structKey) + structKey.length)
-                      .trim()
-                  : null;
+              };
+              const funName = getName(marker, funKey);
+              const structName = getName(marker, structKey);
+              const moduleName = getName(marker, moduleKey);
+              const variableName = getName(marker, varKey);
+              const useName = getName(marker, useKey);
+              const componentName = getName(marker, componentKey);
+              const enumName = getName(marker, enumKey);
+              const typeName = getName(marker, typeKey);
               if (funName) {
-                const funStr = `^(\\s*)*(public )?fun ${funName}\\b(?=[^\\w]).*?}\\n(?=\\n)`;
-                const funRE = new RegExp(funStr, "ms");
-                const funMatch = funRE.exec(injectFileContent);
-                if (funMatch) {
-                  const numSpaces = funMatch[1] ? funMatch[1].length - 1 : 0;
-                  let preFun = injectFileContent.substring(
-                    0,
-                    funMatch.index - 1,
-                  );
-                  const lines = preFun.split("\n");
-                  let pre = [];
-                  for (let x = lines.length - 1; x > 0; x--) {
-                    if (lines[x].trim() === "}") {
-                      break;
+                const funs = funName.split(",");
+                let funContent = [];
+
+                for (let fn of funs) {
+                  fn = fn.trim();
+                  let funStr = "";
+                  if (isMove) {
+                    funStr = `^(\\s*)*?(pub(lic)? )?fu?n \\b${fn}\\b.*?}\\n(\\s*?})?(?=\\n)?`;
+                  } else if (isTs) {
+                    funStr = `^(\\s*)(async )?(export (default )?)?function \\b${fn}\\b.*?\\n\\1}\\n`;
+                  }
+                  const funRE = new RegExp(funStr, "msi");
+                  const funMatch = funRE.exec(injectFileContent);
+                  if (funMatch) {
+                    let preFun = utils.capturePrepend(
+                      funMatch,
+                      injectFileContent,
+                    );
+                    // Check if last function in module, removing last } if true.
+                    if (
+                      isMove &&
+                      funMatch[0].match(/}\s*}\s*$/s) &&
+                      !utils.checkBracesBalance(funMatch[0])
+                    ) {
+                      funContent.push(
+                        utils.removeLeadingSpaces(
+                          funMatch[0].replace(/}$/, ""),
+                          preFun,
+                        ),
+                      );
                     } else {
-                      pre.push(lines[x].substring(numSpaces));
+                      funContent.push(
+                        utils.removeLeadingSpaces(funMatch[0], preFun),
+                      );
                     }
                   }
-                  preFun = pre.reverse().join("\n");
-                  if (!checkBracesBalance(injectFileContent)) {
-                    injectFileContent =
-                      "Could not find valid function definition. If code is formatted correctly, consider using code comments instead.";
+                }
+                injectFileContent = funContent
+                  .join("\n")
+                  .replace(/\n{3}/gm, "\n\n")
+                  .trim();
+              } else if (structName) {
+                const structs = structName.split(",");
+                let structContent = [];
+                for (let struct of structs) {
+                  struct = struct.trim();
+                  const structStr = `^(\\s*)*?(pub(lic)? )?struct \\b${struct}\\b.*?}`;
+                  const structRE = new RegExp(structStr, "msi");
+                  const structMatch = structRE.exec(injectFileContent);
+                  if (structMatch) {
+                    let preStruct = utils.capturePrepend(
+                      structMatch,
+                      injectFileContent,
+                    );
+                    structContent.push(
+                      utils.removeLeadingSpaces(structMatch[0], preStruct),
+                    );
                   } else {
-                    injectFileContent = removeLeadingSpaces(funMatch, preFun);
+                    injectFileContent =
+                      "Struct not found. If code is formatted correctly, consider using code comments instead.";
                   }
                 }
-              } else if (structName) {
-                const structStr = `^(\\s*)*(public )?struct \\b${structName}(?=[^\\w]).*?}\\n(?=\\n)`;
-                const structRE = new RegExp(structStr, "ms");
-                const structMatch = structRE.exec(injectFileContent);
-                if (structMatch) {
-                  if (!checkBracesBalance(structMatch[0])) {
-                    injectFileContent =
-                      "Could not find valid struct definition. If code is formatted correctly, consider using code comments instead";
+                injectFileContent = structContent.join("\n").trim();
+              } else if (variableName) {
+                const vs = variableName.split(",");
+                let temp = "";
+                let isGroup = false;
+                let groupedVars = [];
+                vs.forEach((v) => {
+                  if (v.startsWith("(")) {
+                    temp = v;
+                    isGroup = true;
+                  } else if (isGroup) {
+                    temp += ", " + v;
+                    if (temp.endsWith(")")) {
+                      groupedVars.push(temp);
+                      temp = "";
+                      isGroup = false;
+                    }
                   } else {
-                    injectFileContent = removeLeadingSpaces(structMatch);
+                    groupedVars.push(v);
+                  }
+                });
+                let varContent = [];
+                if (language === "ts") {
+                  const varTsFunction = `^( *)?.*?(let|const) \\b${variableName}\\b.*=>`;
+                  const varTsRE = new RegExp(varTsFunction, "m");
+                  const varTsMatch = varTsRE.exec(injectFileContent);
+                  if (varTsMatch) {
+                    const start = injectFileContent.slice(varTsMatch.index);
+                    //console.log(varTsMatch[1]);
+                    const endText = `^${varTsMatch[1] ? varTsMatch[1] : ""}\\)?\\};`;
+                    const endRE = new RegExp(endText, "m");
+                    const endMatch = endRE.exec(start);
+                    let preVarTs = utils.capturePrepend(
+                      varTsMatch,
+                      injectFileContent,
+                    );
+                    varContent.push(
+                      utils.removeLeadingSpaces(
+                        start.slice(0, endMatch.index + endMatch[0].length),
+                        preVarTs,
+                      ),
+                    );
                   }
                 } else {
-                  injectFileContent = "Struct not found.";
+                  for (let v of groupedVars) {
+                    v = v.trim();
+                    const varStrShort = `^(\\s*)?(#\\[test_only\\])?(let|const) \\(?.*?\\b${v}\\b.*?\\)?\\s?=.*;`;
+                    //const varStrLong = `^(\\s*)?(#\\[test_only\\])?(let|const) ${v}.*\\{.*\\};\\n`;
+                    const varStrLong = `^(\\s*)?(#\\[test_only\\])?(let|const) \\(?.*?\\b${v}\\b.*?\\)?\\s?= \\{[^}]*\\};\\n`;
+                    const varREShort = new RegExp(varStrShort, "m");
+                    const varRELong = new RegExp(varStrLong, "m");
+                    const varShortMatch = varREShort.exec(injectFileContent);
+                    const varLongMatch = varRELong.exec(injectFileContent);
+                    if (varShortMatch || varLongMatch) {
+                      let varMatch = varShortMatch
+                        ? varShortMatch
+                        : varLongMatch;
+                      let preVar = utils.capturePrepend(
+                        varMatch,
+                        injectFileContent,
+                      );
+                      varContent.push(
+                        utils.removeLeadingSpaces(varMatch[0], preVar),
+                      );
+                    } else {
+                      injectFileContent =
+                        "Variable not found. If code is formatted correctly, consider using code comments instead.";
+                    }
+                  }
                 }
+
+                injectFileContent = varContent.join("\n").trim();
+              } else if (useName) {
+                const us = useName.split(",");
+                let useContent = [];
+                for (let u of us) {
+                  u = u.trim();
+                  const uArray = u.split("::");
+                  const useStr = `^( *)(#\\[test_only\\] )?use ${uArray[0]}::\\{?.*?${uArray[1] ? uArray[1] : ""}.*?\\};`;
+                  const useRE = new RegExp(useStr, "ms");
+                  const useMatch = useRE.exec(injectFileContent);
+                  if (useMatch) {
+                    let preUse = utils.capturePrepend(
+                      useMatch,
+                      injectFileContent,
+                    );
+                    useContent.push(
+                      utils.removeLeadingSpaces(useMatch[0], preUse),
+                    );
+                  } else {
+                    injectFileContent =
+                      "Use statement not found. If code is formatted correctly, consider using code comments instead.";
+                  }
+                }
+
+                injectFileContent = useContent.join("\n").trim();
+              } else if (componentName) {
+                const components = componentName.split(",");
+                let componentContent = [];
+                for (let comp of components) {
+                  let names = [];
+                  let name = comp;
+                  let element = "";
+                  let ordinal = "";
+                  if (comp.indexOf(":") > 0) {
+                    names = comp.split(":");
+                    name = names[0];
+                    element = names[1];
+                    ordinal = names[2] ? names[2] : "";
+                  }
+                  const compStr = `^( *)(export (default )?)?function \\b${name}\\b.*?\\n\\1}\\n`;
+                  const compRE = new RegExp(compStr, "ms");
+                  const compMatch = compRE.exec(injectFileContent);
+                  if (compMatch) {
+                    if (element) {
+                      const elStr = `^( *)\\<${element}\\b.*?>.*?\\<\\/${element}>`;
+                      const elRE = new RegExp(elStr, "msg");
+                      let elementsToKeep = [1];
+                      if (ordinal) {
+                        if (
+                          ordinal.indexOf("-") > 0 &&
+                          ordinal.indexOf("&") > 0
+                        ) {
+                          console.log(
+                            "Only dashes or commas allowed for selecting component elements, not both.",
+                          );
+                        } else {
+                          if (ordinal.indexOf("-") > 0) {
+                            const [start, end] = ordinal.split("-").map(Number);
+                            elementsToKeep = Array.from(
+                              { length: end - start + 1 },
+                              (_, i) => start + i,
+                            );
+                          }
+                          if (ordinal.indexOf("&") > 0) {
+                            elementsToKeep = ordinal.split("&").map(Number);
+                          }
+                        }
+                      }
+                      elementsToKeep.sort((a, b) => a - b);
+                      for (
+                        let x = 0;
+                        x < elementsToKeep[elementsToKeep.length - 1];
+                        x++
+                      ) {
+                        const elMatch = elRE.exec(compMatch);
+                        if (elementsToKeep.includes(x + 1)) {
+                          componentContent.push(
+                            utils.removeLeadingSpaces(elMatch[0]),
+                          );
+                        } else {
+                          if (
+                            x > 0 &&
+                            componentContent[x - 1].trim() !== "..."
+                          ) {
+                            componentContent.push("\n...");
+                          }
+                        }
+                      }
+                    } else {
+                      let preComp = utils.capturePrepend(
+                        compMatch,
+                        injectFileContent,
+                      );
+                      componentContent.push(
+                        utils.removeLeadingSpaces(compMatch[0], preComp),
+                      );
+                    }
+                  }
+                }
+                injectFileContent = componentContent.join("\n").trim();
+              } else if (moduleName) {
+                const modStr = `^(\\s*)*module \\b${moduleName}\\b.*?}\\n(?=\\n)?`;
+                const modRE = new RegExp(modStr, "msi");
+                const modMatch = modRE.exec(injectFileContent);
+                if (modMatch) {
+                  const abridged = injectFileContent.substring(modMatch.index);
+                  const lines = abridged.split("\n");
+                  let open = [];
+                  let close = [];
+                  let modLines = [];
+                  for (let line of lines) {
+                    modLines.push(line);
+                    open = [...open, ...(line.match(/{/g) || [])];
+                    close = [...close, ...(line.match(/}/g) || [])];
+                    if (open.length !== 0 && close.length === open.length) {
+                      break;
+                    }
+                  }
+                  const preMod = utils.capturePrepend(
+                    modMatch,
+                    injectFileContent,
+                  );
+                  injectFileContent = utils.removeLeadingSpaces(
+                    modLines.join("\n"),
+                    preMod,
+                  );
+                } else {
+                  injectFileContent =
+                    "Module not found. If code is formatted correctly, consider using code comments instead.";
+                }
+              } else if (enumName) {
+                const enums = enumName.split(",");
+                let enumContent = [];
+                for (let e of enums) {
+                  const enumStr = `^( *)(export)? enum \\b${e}\\b\\s*\\{[^}]*\\}`;
+                  const enumRE = new RegExp(enumStr, "m");
+                  const enumMatch = enumRE.exec(injectFileContent);
+                  if (enumMatch) {
+                    enumContent.push(utils.removeLeadingSpaces(enumMatch[0]));
+                  }
+                }
+                injectFileContent = enumContent.join("\n").trim();
+              } else if (typeName) {
+                const types = typeName.split(",");
+                let typeContent = [];
+                for (let t of types) {
+                  const typeStartStr = `^( *)(export )?type \\b${t}\\b`;
+                  const typeRE = new RegExp(typeStartStr, "m");
+                  const typeMatch = typeRE.exec(injectFileContent);
+                  if (typeMatch) {
+                    let typeSubContent = injectFileContent.slice(
+                      typeMatch.index,
+                    );
+                    const spaces = typeMatch[1] ? typeMatch[1] : "";
+                    const endStr = `^${spaces}\\};`;
+                    const endRE = new RegExp(endStr, "m");
+                    const endMatch = endRE.exec(typeSubContent);
+                    if (endMatch) {
+                      typeSubContent = typeSubContent.slice(
+                        0,
+                        endMatch.index + endMatch[0].length,
+                      );
+                    } else {
+                      typeSubContent = "Error capturing type declaration.";
+                    }
+                    typeContent.push(utils.removeLeadingSpaces(typeSubContent));
+                  }
+                }
+                injectFileContent = typeContent.join("\n").trim();
               } else {
                 const regexStr = `\\/\\/\\s?docs::${marker.trim()}\\b([\\s\\S]*)\\/\\/\\s*docs::\\/\\s?${marker.trim()}\\b`;
                 const closingsStr = `\\/\\/\\s?docs::\\/${marker.trim()}\\b([)};]*)`;
@@ -151,6 +405,7 @@ const addCodeInject = function (source) {
                 const regex = new RegExp(regexStr, "g");
                 const match = regex.exec(injectFileContent);
                 const closingStr = closingRE.exec(injectFileContent);
+                var closing = "";
                 if (match) {
                   injectFileContent = match[1];
                 }
@@ -171,12 +426,10 @@ const addCodeInject = function (source) {
                   const totClosings = closingArray.length;
 
                   // Process any closing elements added in the closing comment of source code
-                  let closing = "";
                   for (let j = 0; j < totClosings; j++) {
                     let space = "  ".repeat(totClosings - 1 - j);
                     closing += `\n${space}${closingArray[j]}`;
                   }
-                  injectFileContent = injectFileContent.trim() + closing;
                 }
 
                 // Start searching for the pause doc comments
@@ -186,72 +439,80 @@ const addCodeInject = function (source) {
                 const pauseStr = `\\/\\/\\s?docs::${marker.trim()}-pause:?(.*)`;
                 const pauseRE = new RegExp(pauseStr, "g");
                 let matches = injectFileContent.match(pauseRE);
-                for (let match in matches) {
-                  const test = matches[match].replace(
-                    /[.*+?^${}()|[\]\\]/g,
-                    "\\$&",
-                  );
-                  let replacer = "";
-                  if (matches[match].indexOf("-pause:") > 0) {
-                    replacer = matches[match].substring(
-                      matches[match].indexOf("-pause") + 8,
+                if (matches) {
+                  for (let match in matches) {
+                    const test = matches[match].replace(
+                      /[.*+?^${}()|[\]\\]/g,
+                      "\\$&",
                     );
-                  }
+                    let replacer = "";
 
-                  const newRE = new RegExp(test);
-                  const resumeRE = new RegExp(
-                    `\\/\\/\\s?docs::${marker.trim()}-resume`,
-                  );
-                  let paused;
-                  if (replacer !== "") {
-                    paused = new RegExp(
-                      newRE.source.replace(":?(.*)", "") +
-                        ".*?" +
-                        resumeRE.source,
-                      "gs",
+                    if (matches[match].indexOf("-pause:") > 0) {
+                      replacer = matches[match].substring(
+                        matches[match].indexOf("-pause") + 7,
+                      );
+                    }
+
+                    const newRE = new RegExp(test);
+                    const resumeRE = new RegExp(
+                      `\\/\\/\\s?docs::${marker.trim()}-resume`,
                     );
-                  } else {
-                    paused = new RegExp(
-                      newRE.source.replace(":?(.*)", "") +
-                        "(?!:).*?" +
-                        resumeRE.source,
-                      "gs",
+                    let paused;
+                    if (replacer !== "") {
+                      paused = new RegExp(
+                        newRE.source.replace(":?(.*)", "") +
+                          ".*?" +
+                          resumeRE.source,
+                        "gs",
+                      );
+                    } else {
+                      paused = new RegExp(
+                        newRE.source.replace(":?(.*)", "") +
+                          "(?!:).*?" +
+                          resumeRE.source,
+                        "gs",
+                      );
+                    }
+                    injectFileContent = injectFileContent.replace(
+                      paused,
+                      replacer,
                     );
                   }
-                  injectFileContent = injectFileContent.replace(
-                    paused,
-                    replacer,
-                  );
                 }
+                injectFileContent =
+                  utils.removeLeadingSpaces(injectFileContent) + closing;
               }
 
-              // Replace all the //docs:: lines in code
-              injectFileContent = injectFileContent.replace(
-                /^\s*\/\/\s*docs::\/?.*\r?$\n?/gm,
-                "",
+              injectFileContent = utils.processOptions(
+                injectFileContent,
+                options,
               );
 
-              const trimContent = (content) => {
-                let arr = content.split("\n");
-                let start = 0;
-                let end = arr.length;
-
-                while (start < end && arr[start] === "") {
-                  start++;
-                }
-
-                while (end > start && arr[end - 1] === "") {
-                  end--;
-                }
-
-                return arr.slice(start, end).join("\n");
-              };
-
-              injectFileContent = trimContent(injectFileContent);
-              injectFileContent = `\`\`\`${language} title=${injectFile}\n${injectFileContent}\n\`\`\``;
-
+              injectFileContent = utils.formatOutput(
+                language,
+                injectFile,
+                injectFileContent,
+                options,
+              );
               res = res.replace(replacer, injectFileContent);
               res = addMarkdownIncludes(res);
+            } else {
+              // Handle import of all the code
+              const processed = utils.processOptions(
+                injectFileContent,
+                options,
+              );
+              const processedFileContent = utils.formatOutput(
+                language,
+                injectFile,
+                processed,
+              );
+              // Temporarily replace double spaces with tabs. Replaced back downstream.
+              // Prevents unexpected whitespace removal from util functions.
+              res = res.replace(
+                replacer,
+                processedFileContent.replace(/ {2}/g, `\t`),
+              );
             }
           } else {
             res = res.replace(

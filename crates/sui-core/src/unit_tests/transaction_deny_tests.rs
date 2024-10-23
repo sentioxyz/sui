@@ -47,7 +47,7 @@ async fn setup_test(deny_config: TransactionDenyConfig) -> (NetworkConfig, Arc<A
             .build();
     let state = TestAuthorityBuilder::new()
         .with_transaction_deny_config(deny_config)
-        .with_network_config(&network_config)
+        .with_network_config(&network_config, 0)
         .build()
         .await;
     (network_config, state)
@@ -60,7 +60,7 @@ async fn reload_state_with_new_deny_config(
 ) -> Arc<AuthorityState> {
     TestAuthorityBuilder::new()
         .with_transaction_deny_config(config)
-        .with_network_config(network_config)
+        .with_network_config(network_config, 0)
         .with_store(state.database_for_testing().clone())
         .build()
         .await
@@ -289,8 +289,8 @@ async fn test_package_denied() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Publish 3 packages, where b depends on c, and a depends on b.
     // Also upgrade c to c', and upgrade b to b' (which will start using c' instead of c as dependency).
-    let (package_c, cap_c) = publish_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/c"),
+    let (tx_c, (package_c, cap_c)) = publish_package_on_single_authority(
+        &path.join("src/unit_tests/data/package_deny/c"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[0],
@@ -300,8 +300,8 @@ async fn test_package_denied() {
     )
     .await
     .unwrap();
-    let (package_b, cap_b) = publish_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/b"),
+    let (tx_b, (package_b, cap_b)) = publish_package_on_single_authority(
+        &path.join("src/unit_tests/data/package_deny/b"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[1],
@@ -311,8 +311,8 @@ async fn test_package_denied() {
     )
     .await
     .unwrap();
-    let (package_a, cap_a) = publish_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/a"),
+    let (tx_a, (package_a, cap_a)) = publish_package_on_single_authority(
+        &path.join("src/unit_tests/data/package_deny/a"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[2],
@@ -322,8 +322,8 @@ async fn test_package_denied() {
     )
     .await
     .unwrap();
-    let package_c_prime = upgrade_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/c"),
+    let (tx_c_prime, package_c_prime) = upgrade_package_on_single_authority(
+        &path.join("src/unit_tests/data/package_deny/c"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[3],
@@ -335,8 +335,8 @@ async fn test_package_denied() {
     )
     .await
     .unwrap();
-    let package_b_prime = upgrade_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/b"),
+    let (tx_b_prime, package_b_prime) = upgrade_package_on_single_authority(
+        &path.join("src/unit_tests/data/package_deny/b"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[4],
@@ -348,6 +348,15 @@ async fn test_package_denied() {
     )
     .await
     .unwrap();
+
+    state
+        .get_cache_commit()
+        .commit_transaction_outputs(
+            state.epoch_store_for_testing().epoch(),
+            &[tx_c, tx_b, tx_a, tx_c_prime, tx_b_prime],
+        )
+        .await
+        .unwrap();
 
     // Re-create the state such that we could deny package c.
     let state = reload_state_with_new_deny_config(
@@ -388,7 +397,7 @@ async fn test_package_denied() {
 
     // Publish a should fail because it has a dependency on c, which is denied.
     let result = publish_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/a"),
+        &path.join("src/unit_tests/data/package_deny/a"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[10],
@@ -401,7 +410,7 @@ async fn test_package_denied() {
 
     // Upgrade a using old c as dependency should fail.
     let result = upgrade_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/a"),
+        &path.join("src/unit_tests/data/package_deny/a"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[11],
@@ -416,7 +425,7 @@ async fn test_package_denied() {
 
     // Upgrade a using c' as dependency will succeed since it no longer depends on c.
     let result = upgrade_package_on_single_authority(
-        path.join("src/unit_tests/data/package_deny/a"),
+        &path.join("src/unit_tests/data/package_deny/a"),
         accounts[0].0,
         &accounts[0].1,
         accounts[0].2[12],
@@ -446,7 +455,7 @@ async fn test_certificate_deny() {
     );
     let digest = *tx.digest();
     let state = TestAuthorityBuilder::new()
-        .with_network_config(&network_config)
+        .with_network_config(&network_config, 0)
         .with_certificate_deny_config(
             CertificateDenyConfigBuilder::new()
                 .add_certificate_deny(digest)

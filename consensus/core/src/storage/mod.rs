@@ -17,6 +17,7 @@ use crate::{
 };
 
 /// A common interface for consensus storage.
+#[allow(unused)]
 pub(crate) trait Store: Send + Sync {
     /// Writes blocks, consensus commits and other data to store atomically.
     fn write(&self, write_batch: WriteBatch) -> ConsensusResult<()>;
@@ -50,7 +51,7 @@ pub(crate) trait Store: Send + Sync {
     /// Reads the last commit.
     fn read_last_commit(&self) -> ConsensusResult<Option<TrustedCommit>>;
 
-    /// Reads all commits from start (inclusive) until end (exclusive).
+    /// Reads all commits from start (inclusive) until end (inclusive).
     fn scan_commits(&self, range: CommitRange) -> ConsensusResult<Vec<TrustedCommit>>;
 
     /// Reads all blocks voting on a particular commit.

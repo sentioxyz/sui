@@ -1,10 +1,12 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::abi::{EthBridgeCommittee, EthSuiBridge};
-use crate::config::BridgeNodeConfig;
-use crate::config::EthConfig;
-use crate::config::SuiConfig;
+use crate::abi::{
+    EthBridgeCommittee, EthBridgeConfig, EthBridgeLimiter, EthBridgeVault, EthSuiBridge,
+};
+use crate::config::{
+    default_ed25519_key_pair, BridgeNodeConfig, EthConfig, MetricsConfig, SuiConfig,
+};
 use crate::crypto::BridgeAuthorityKeyPair;
 use crate::crypto::BridgeAuthorityPublicKeyBytes;
 use crate::server::APPLICATION_JSON;
@@ -43,6 +45,14 @@ use sui_types::transaction::{ObjectArg, TransactionData};
 use sui_types::BRIDGE_PACKAGE_ID;
 
 pub type EthSigner = SignerMiddleware<Provider<Http>, Wallet<SigningKey>>;
+
+pub struct EthBridgeContracts<P> {
+    pub bridge: EthSuiBridge<Provider<P>>,
+    pub committee: EthBridgeCommittee<Provider<P>>,
+    pub limiter: EthBridgeLimiter<Provider<P>>,
+    pub vault: EthBridgeVault<Provider<P>>,
+    pub config: EthBridgeConfig<Provider<P>>,
+}
 
 /// Generate Bridge Authority key (Secp256k1KeyPair) and write to a file as base64 encoded `privkey`.
 pub fn generate_bridge_authority_key_and_write_to_file(
@@ -93,11 +103,13 @@ pub fn generate_bridge_client_key_and_write_to_file(
 pub async fn get_eth_contract_addresses<P: ethers::providers::JsonRpcClient + 'static>(
     bridge_proxy_address: EthAddress,
     provider: &Arc<Provider<P>>,
-) -> anyhow::Result<(EthAddress, EthAddress, EthAddress, EthAddress)> {
+) -> anyhow::Result<(EthAddress, EthAddress, EthAddress, EthAddress, EthAddress)> {
     let sui_bridge = EthSuiBridge::new(bridge_proxy_address, provider.clone());
     let committee_address: EthAddress = sui_bridge.committee().call().await?;
     let limiter_address: EthAddress = sui_bridge.limiter().call().await?;
     let vault_address: EthAddress = sui_bridge.vault().call().await?;
+    let vault = EthBridgeVault::new(vault_address, provider.clone());
+    let weth_address: EthAddress = vault.w_eth().call().await?;
     let committee = EthBridgeCommittee::new(committee_address, provider.clone());
     let config_address: EthAddress = committee.config().call().await?;
 
@@ -106,7 +118,32 @@ pub async fn get_eth_contract_addresses<P: ethers::providers::JsonRpcClient + 's
         limiter_address,
         vault_address,
         config_address,
+        weth_address,
     ))
+}
+
+/// Given the address of SuiBridge Proxy, return the contracts of the committee, limiter, vault, and config.
+pub async fn get_eth_contracts<P: ethers::providers::JsonRpcClient + 'static>(
+    bridge_proxy_address: EthAddress,
+    provider: &Arc<Provider<P>>,
+) -> anyhow::Result<EthBridgeContracts<P>> {
+    let sui_bridge = EthSuiBridge::new(bridge_proxy_address, provider.clone());
+    let committee_address: EthAddress = sui_bridge.committee().call().await?;
+    let limiter_address: EthAddress = sui_bridge.limiter().call().await?;
+    let vault_address: EthAddress = sui_bridge.vault().call().await?;
+    let committee = EthBridgeCommittee::new(committee_address, provider.clone());
+    let config_address: EthAddress = committee.config().call().await?;
+
+    let limiter = EthBridgeLimiter::new(limiter_address, provider.clone());
+    let vault = EthBridgeVault::new(vault_address, provider.clone());
+    let config = EthBridgeConfig::new(config_address, provider.clone());
+    Ok(EthBridgeContracts {
+        bridge: sui_bridge,
+        committee,
+        limiter,
+        vault,
+        config,
+    })
 }
 
 /// Read bridge key from a file and print the corresponding information.
@@ -161,6 +198,11 @@ pub fn generate_bridge_node_config_and_write_to_file(
         approved_governance_actions: vec![],
         run_client,
         db_path: None,
+        metrics_key_pair: default_ed25519_key_pair(),
+        metrics: Some(MetricsConfig {
+            push_interval_seconds: None, // use default value
+            push_url: "metrics_proxy_url".to_string(),
+        }),
     };
     if run_client {
         config.sui.bridge_client_key_path = Some(PathBuf::from("/path/to/your/bridge_client_key"));

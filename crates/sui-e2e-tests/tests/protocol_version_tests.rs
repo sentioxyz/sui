@@ -1,7 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use sui_protocol_config::{ProtocolConfig, ProtocolVersion, SupportedProtocolVersions};
+use sui_protocol_config::{ProtocolConfig, ProtocolVersion};
+use sui_types::supported_protocol_versions::SupportedProtocolVersions;
 use test_cluster::TestClusterBuilder;
 
 #[tokio::test]
@@ -66,7 +67,6 @@ mod sim_only_tests {
     use sui_json_rpc_types::{SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI};
     use sui_macros::*;
     use sui_move_build::{BuildConfig, CompiledPackage};
-    use sui_protocol_config::SupportedProtocolVersions;
     use sui_types::base_types::ConciseableName;
     use sui_types::base_types::{ObjectID, ObjectRef};
     use sui_types::effects::{TransactionEffects, TransactionEffectsAPI};
@@ -77,6 +77,7 @@ mod sim_only_tests {
         SuiSystemState, SuiSystemStateTrait, SUI_SYSTEM_STATE_SIM_TEST_DEEP_V2,
         SUI_SYSTEM_STATE_SIM_TEST_SHALLOW_V2, SUI_SYSTEM_STATE_SIM_TEST_V1,
     };
+    use sui_types::supported_protocol_versions::SupportedProtocolVersions;
     use sui_types::transaction::{
         CallArg, Command, ObjectArg, ProgrammableMoveCall, ProgrammableTransaction,
         TransactionData, TEST_ONLY_GAS_UNIT_FOR_GENERIC,
@@ -458,8 +459,8 @@ mod sim_only_tests {
                 &cluster,
                 ProgrammableMoveCall {
                     package: sui_extra,
-                    module: ident_str!("msim_extra_1").to_owned(),
-                    function: ident_str!("canary").to_owned(),
+                    module: "msim_extra_1".to_owned(),
+                    function: "canary".to_owned(),
                     type_arguments: vec![],
                     arguments: vec![],
                 }
@@ -488,8 +489,8 @@ mod sim_only_tests {
             cluster,
             ProgrammableMoveCall {
                 package: SUI_SYSTEM_PACKAGE_ID,
-                module: ident_str!("msim_extra_1").to_owned(),
-                function: ident_str!("canary").to_owned(),
+                module: "msim_extra_1".to_owned(),
+                function: "canary".to_owned(),
                 type_arguments: vec![],
                 arguments: vec![],
             },
@@ -1048,6 +1049,6 @@ mod sim_only_tests {
 
         let mut config = BuildConfig::new_for_testing();
         config.run_bytecode_verifier = true;
-        config.build(package).unwrap()
+        config.build(&package).unwrap()
     }
 }

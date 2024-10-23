@@ -31,7 +31,8 @@ use super::LockFile;
 /// V0: Base version.
 /// V1: Adds toolchain versioning support.
 /// V2: Adds support for managing addresses on package publish and upgrades.
-pub const VERSION: u64 = 2;
+/// V3: Renames dependency `name` field to `id` and adds a `name` field to store the name from the manifest.
+pub const VERSION: u16 = 3;
 
 /// Table for storing package info under an environment.
 const ENV_TABLE_NAME: &str = "env";
@@ -56,8 +57,8 @@ pub struct Packages {
 
 #[derive(Deserialize)]
 pub struct Package {
-    /// The name of the package (corresponds to the name field from its source manifest).
-    pub name: String,
+    /// Package identifier (as resolved by the package hook).
+    pub id: String,
 
     /// Where to find this dependency.  Schema is not described in terms of serde-compatible
     /// structs, so it is deserialized into a generic data structure.
@@ -73,6 +74,9 @@ pub struct Package {
 
 #[derive(Deserialize)]
 pub struct Dependency {
+    /// Package identifier (as resolved by the package hook).
+    pub id: String,
+
     /// The name of the dependency (corresponds to the key for the dependency in the depending
     /// package's source manifest).
     pub name: String,
@@ -110,7 +114,7 @@ pub struct ManagedPackage {
 
 #[derive(Serialize, Deserialize)]
 pub struct Header {
-    pub version: u64,
+    pub version: u16,
     /// A hash of the manifest file content this lock file was generated from computed using SHA-256
     /// hashing algorithm.
     pub manifest_digest: String,
@@ -199,9 +203,9 @@ impl Header {
         let Schema { move_: header } =
             toml::de::from_str::<Schema<Header>>(contents).context("Deserializing lock header")?;
 
-        if header.version > VERSION {
+        if header.version != VERSION {
             bail!(
-                "Lock file format is too new, expected version {} or below, found {}",
+                "Lock file format mismatch, expected version {}, found {}",
                 VERSION,
                 header.version
             );
@@ -252,7 +256,8 @@ pub fn update_dependency_graph(
         .as_table_mut()
         .ok_or_else(|| anyhow!("Could not find or create move table in Move.lock"))?;
 
-    // Update `manifest_digest` and `deps_digest` in `[move]` table section.
+    // Update `version`, `manifest_digest`, and `deps_digest` in `[move]` table section.
+    move_table["version"] = value(VERSION as i64);
     move_table["manifest_digest"] = value(manifest_digest);
     move_table["deps_digest"] = value(deps_digest);
 
@@ -344,6 +349,31 @@ pub enum ManagedAddressUpdate {
         latest_id: String,
         version: u64,
     },
+}
+
+/// Sets the `original-published-id` to a given `id` in the lock file. This is a raw utility
+/// for preparing package publishing and package upgrades. Invariant: callers maintain a valid
+/// hex `id`.
+pub fn set_original_id(file: &mut LockFile, environment: &str, id: &str) -> Result<()> {
+    use toml_edit::{value, Document};
+    let mut toml_string = String::new();
+    file.read_to_string(&mut toml_string)?;
+    let mut toml = toml_string.parse::<Document>()?;
+    let env_table = toml
+        .get_mut(ENV_TABLE_NAME)
+        .and_then(|item| item.as_table_mut())
+        .ok_or_else(|| anyhow!("Could not find 'env' table in Move.lock"))?
+        .get_mut(environment)
+        .and_then(|item| item.as_table_mut())
+        .ok_or_else(|| anyhow!("Could not find {environment} table in Move.lock"))?;
+    env_table[ORIGINAL_PUBLISHED_ID_KEY] = value(id);
+
+    file.set_len(0)?;
+    file.rewind()?;
+    write!(file, "{}", toml)?;
+    file.flush()?;
+    file.rewind()?;
+    Ok(())
 }
 
 /// Saves published or upgraded package addresses in the lock file.

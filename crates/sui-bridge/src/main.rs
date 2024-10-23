@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use clap::Parser;
+use fastcrypto::traits::KeyPair;
 use mysten_metrics::start_prometheus_server;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 use sui_bridge::config::BridgeNodeConfig;
+use sui_bridge::metrics::start_metrics_push_task;
 use sui_bridge::node::run_bridge_node;
+use sui_bridge::server::BridgeNodePublicMetadata;
 use sui_config::Config;
 use tracing::info;
 
@@ -42,5 +45,15 @@ async fn main() -> anyhow::Result<()> {
         .with_env()
         .with_prom_registry(&prometheus_registry)
         .init();
-    Ok(run_bridge_node(config, prometheus_registry).await?.await?)
+
+    let metadata = BridgeNodePublicMetadata::new(VERSION, config.metrics_key_pair.public().clone());
+
+    start_metrics_push_task(
+        &config.metrics,
+        config.metrics_key_pair.copy(),
+        registry_service.clone(),
+    );
+    Ok(run_bridge_node(config, metadata, prometheus_registry)
+        .await?
+        .await?)
 }

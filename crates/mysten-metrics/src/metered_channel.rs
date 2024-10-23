@@ -99,22 +99,20 @@ impl<T> Receiver<T> {
     /// Attempts to receive the next value for this receiver.
     /// Decrements the gauge in case of a successful `try_recv`.
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        self.inner.try_recv().map(|val| {
+        self.inner.try_recv().inspect(|_| {
             self.gauge.dec();
             if let Some(total_gauge) = &self.total {
                 total_gauge.inc();
             }
-            val
         })
     }
 
     pub fn blocking_recv(&mut self) -> Option<T> {
-        self.inner.blocking_recv().map(|val| {
+        self.inner.blocking_recv().inspect(|_| {
             self.gauge.dec();
             if let Some(total_gauge) = &self.total {
                 total_gauge.inc();
             }
-            val
         })
     }
 
@@ -167,7 +165,9 @@ impl<'a, T> Permit<'a, T> {
 impl<'a, T> Drop for Permit<'a, T> {
     fn drop(&mut self) {
         // in the case the permit is dropped without sending, we still want to decrease the occupancy of the channel
-        self.gauge_ref.dec()
+        if self.permit.is_some() {
+            self.gauge_ref.dec();
+        }
     }
 }
 
@@ -192,9 +192,8 @@ impl<T> Sender<T> {
         self.inner
             .try_send(message)
             // remove this unsightly hack once https://github.com/rust-lang/rust/issues/91345 is resolved
-            .map(|val| {
+            .inspect(|_| {
                 self.gauge.inc();
-                val
             })
     }
 
@@ -318,6 +317,7 @@ impl<T> From<Receiver<T>> for ReceiverStream<T> {
 ////////////////////////////////////////////////////////////////
 
 /// Similar to `mpsc::channel`, `channel` creates a pair of `Sender` and `Receiver`
+/// Deprecated: use `monitored_mpsc::channel` instead.
 #[track_caller]
 pub fn channel<T>(size: usize, gauge: &IntGauge) -> (Sender<T>, Receiver<T>) {
     gauge.set(0);
@@ -335,6 +335,7 @@ pub fn channel<T>(size: usize, gauge: &IntGauge) -> (Sender<T>, Receiver<T>) {
     )
 }
 
+/// Deprecated: use `monitored_mpsc::channel` instead.
 #[track_caller]
 pub fn channel_with_total<T>(
     size: usize,

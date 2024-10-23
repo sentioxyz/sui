@@ -31,6 +31,8 @@ your application's lifecycle.
   connection in Stashed.
 - `options`: An optional object with the following properties:
   - `origin`: The origin of the Stashed website. Defaults to `https://getstashed.com`.
+  - `network`: The network that you would like the Stashed wallet to use. Defaults to `mainnet`,
+    supports `mainnet` and `testnet`.
 
 ```ts
 import { registerStashedWallet } from '@mysten/zksend';
@@ -64,8 +66,8 @@ import { useCurrentWallet } from '@mysten/dapp-kit';
 import { STASHED_WALLET_NAME } from '@mysten/zksend';
 
 function StashedOnly() {
-	const { curentWallet } = useCurrentWallet();
-	const walletIsStashedWallet = curentWallet?.name === STASHED_WALLET_NAME;
+	const { currentWallet } = useCurrentWallet();
+	const walletIsStashedWallet = currentWallet?.name === STASHED_WALLET_NAME;
 
 	// rest of component logic...
 }

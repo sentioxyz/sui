@@ -12,9 +12,7 @@ use serde::Serialize;
 use crate::{
     base_types::{ObjectID, ObjectRef, SuiAddress},
     move_package::PACKAGE_MODULE_NAME,
-    transaction::{
-        Argument, CallArg, Command, ObjectArg, ProgrammableMoveCall, ProgrammableTransaction,
-    },
+    transaction::{Argument, CallArg, Command, ObjectArg, ProgrammableTransaction},
     SUI_FRAMEWORK_PACKAGE_ID,
 };
 
@@ -170,13 +168,13 @@ impl ProgrammableTransactionBuilder {
         type_arguments: Vec<TypeTag>,
         arguments: Vec<Argument>,
     ) -> Argument {
-        self.command(Command::MoveCall(Box::new(ProgrammableMoveCall {
+        self.command(Command::move_call(
             package,
             module,
             function,
             type_arguments,
             arguments,
-        })))
+        ))
     }
 
     pub fn publish_upgradeable(
@@ -189,14 +187,13 @@ impl ProgrammableTransactionBuilder {
 
     pub fn publish_immutable(&mut self, modules: Vec<Vec<u8>>, dep_ids: Vec<ObjectID>) {
         let cap = self.publish_upgradeable(modules, dep_ids);
-        self.commands
-            .push(Command::MoveCall(Box::new(ProgrammableMoveCall {
-                package: SUI_FRAMEWORK_PACKAGE_ID,
-                module: PACKAGE_MODULE_NAME.to_owned(),
-                function: ident_str!("make_immutable").to_owned(),
-                type_arguments: vec![],
-                arguments: vec![cap],
-            })));
+        self.commands.push(Command::move_call(
+            SUI_FRAMEWORK_PACKAGE_ID,
+            PACKAGE_MODULE_NAME.to_owned(),
+            ident_str!("make_immutable").to_owned(),
+            vec![],
+            vec![cap],
+        ));
     }
 
     pub fn upgrade(
@@ -302,7 +299,7 @@ impl ProgrammableTransactionBuilder {
         // collect recipients in the case where they are non-unique in order
         // to minimize the number of transfers that must be performed
         let mut recipient_map: IndexMap<SuiAddress, Vec<usize>> = IndexMap::new();
-        let mut amt_args = vec![];
+        let mut amt_args = Vec::with_capacity(recipients.len());
         for (i, (recipient, amount)) in recipients.into_iter().zip(amounts).enumerate() {
             recipient_map.entry(recipient).or_default().push(i);
             amt_args.push(self.pure(amount)?);

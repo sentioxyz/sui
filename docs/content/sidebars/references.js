@@ -18,7 +18,7 @@ const references = [
 		items: [
 			{
 				type: 'category',
-				label: 'GraphQL',
+				label: 'GraphQL (Beta)',
 				link: {
 					type: 'doc',
 					id: 'references/sui-graphql',
@@ -75,6 +75,11 @@ const references = [
 				type: 'link',
 				label: 'TypeScript SDK',
 				href: 'https://sdk.mystenlabs.com/typescript',
+			},
+			{
+				type: 'link',
+				label: 'zkSend SDK',
+				href: 'https://sdk.mystenlabs.com/zksend',
 			},
 		],
 	},

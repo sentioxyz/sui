@@ -5,6 +5,10 @@ pub use checked::*;
 
 #[sui_macros::with_checked_arithmetic]
 mod checked {
+    use crate::execution_mode::ExecutionMode;
+    use crate::execution_value::{
+        CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
+    };
     use crate::gas_charger::GasCharger;
     use move_binary_format::{
         compatibility::{Compatibility, InclusionCheck},
@@ -15,7 +19,7 @@ mod checked {
     };
     use move_core_types::{
         account_address::AccountAddress,
-        identifier::IdentStr,
+        identifier::{IdentStr, Identifier},
         language_storage::{ModuleId, TypeTag},
         u256::U256,
     };
@@ -33,6 +37,7 @@ mod checked {
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::execution_config_utils::to_binary_config;
+    use sui_types::execution_status::{CommandArgumentError, PackageUpgradeError};
     use sui_types::storage::{get_package_objects, PackageObject};
     use sui_types::{
         base_types::{
@@ -41,9 +46,6 @@ mod checked {
         },
         coin::Coin,
         error::{command_argument_error, ExecutionError, ExecutionErrorKind},
-        execution::{
-            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
-        },
         id::{RESOLVED_SUI_ID, UID},
         metrics::LimitsMetrics,
         move_package::{
@@ -53,10 +55,6 @@ mod checked {
         transaction::{Argument, Command, ProgrammableMoveCall, ProgrammableTransaction},
         transfer::RESOLVED_RECEIVING_STRUCT,
         SUI_FRAMEWORK_ADDRESS,
-    };
-    use sui_types::{
-        execution_mode::ExecutionMode,
-        execution_status::{CommandArgumentError, PackageUpgradeError},
     };
     use sui_verifier::{
         private_generics::{EVENT_MODULE, PRIVATE_TRANSFER_FUNCTIONS, TRANSFER_MODULE},
@@ -134,6 +132,11 @@ mod checked {
                         "input checker ensures if args are empty, there is a type specified"
                     );
                 };
+
+                // SAFETY: Preserving existing behaviour for identifier deserialization within type
+                // tags and inputs.
+                let tag = unsafe { tag.into_type_tag_unchecked() };
+
                 let elem_ty = context
                     .load_type(&tag)
                     .map_err(|e| context.convert_vm_error(e))?;
@@ -160,6 +163,10 @@ mod checked {
                 let mut arg_iter = args.into_iter().enumerate();
                 let (mut used_in_non_entry_move_call, elem_ty) = match tag_opt {
                     Some(tag) => {
+                        // SAFETY: Preserving existing behaviour for identifier deserialization within type
+                        // tags and inputs.
+                        let tag = unsafe { tag.into_type_tag_unchecked() };
+
                         let elem_ty = context
                             .load_type(&tag)
                             .map_err(|e| context.convert_vm_error(e))?;
@@ -287,9 +294,17 @@ mod checked {
                     arguments,
                 } = *move_call;
 
+                // SAFETY: Preserving existing behaviour for identifier deserialization.
+                let module = unsafe { Identifier::new_unchecked(module) };
+                let function = unsafe { Identifier::new_unchecked(function) };
+
                 // Convert type arguments to `Type`s
                 let mut loaded_type_arguments = Vec::with_capacity(type_arguments.len());
                 for (ix, type_arg) in type_arguments.into_iter().enumerate() {
+                    // SAFETY: Preserving existing behaviour for identifier deserialization within type
+                    // tags and inputs.
+                    let type_arg = unsafe { type_arg.into_type_tag_unchecked() };
+
                     let ty = context
                         .load_type(&type_arg)
                         .map_err(|e| context.convert_type_argument_error(ix, e))?;
@@ -839,7 +854,7 @@ mod checked {
                 &BTreeMap::new(),
                 &context
                     .protocol_config
-                    .verifier_config(/* for_signing */ false),
+                    .verifier_config(/* signing_limits */ None),
             )?;
         }
 
@@ -1084,7 +1099,7 @@ mod checked {
                     Type::TyParam(_) => {
                         invariant_violation!("TyParam should have been substituted")
                     }
-                    Type::Datatype(_) | Type::Datatype(_) if abilities.has_key() => {
+                    Type::Datatype(_) | Type::DatatypeInstantiation(_) if abilities.has_key() => {
                         let type_tag = context
                             .vm
                             .get_runtime()

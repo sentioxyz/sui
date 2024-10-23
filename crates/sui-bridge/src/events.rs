@@ -104,6 +104,13 @@ pub struct MoveCommitteeUpdateEvent {
     pub stake_participation_percentage: u64,
 }
 
+// `CommitteeMemberUrlUpdateEvent` emitted in committee.move
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MoveCommitteeMemberUrlUpdateEvent {
+    pub member: Vec<u8>,
+    pub new_url: Vec<u8>,
+}
+
 // `BlocklistValidatorEvent` emitted in committee.move
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MoveBlocklistValidatorEvent {
@@ -112,8 +119,8 @@ pub struct MoveBlocklistValidatorEvent {
 }
 
 // `UpdateRouteLimitEvent` emitted in limiter.move
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MoveUpdateRouteLimitEvent {
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct UpdateRouteLimitEvent {
     pub sending_chain: u8,
     pub receiving_chain: u8,
     pub new_limit: u64,
@@ -262,10 +269,38 @@ impl TryFrom<MoveBlocklistValidatorEvent> for BlocklistValidatorEvent {
     }
 }
 
+// Sanitized version of MoveCommitteeMemberUrlUpdateEvent
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct CommitteeMemberUrlUpdateEvent {
+    pub member: BridgeAuthorityPublicKey,
+    pub new_url: String,
+}
+
+impl TryFrom<MoveCommitteeMemberUrlUpdateEvent> for CommitteeMemberUrlUpdateEvent {
+    type Error = BridgeError;
+
+    fn try_from(event: MoveCommitteeMemberUrlUpdateEvent) -> BridgeResult<Self> {
+        let member = BridgeAuthorityPublicKey::from_bytes(&event.member).map_err(|e|
+            BridgeError::Generic(format!("Failed to convert MoveBlocklistValidatorEvent to BlocklistValidatorEvent. Failed to convert public key to BridgeAuthorityPublicKey: {:?}", e))
+        )?;
+        let new_url = String::from_utf8(event.new_url).map_err(|e|
+            BridgeError::Generic(format!("Failed to convert MoveBlocklistValidatorEvent to BlocklistValidatorEvent. Failed to convert new_url to String: {:?}", e))
+        )?;
+        Ok(Self { member, new_url })
+    }
+}
+
 impl TryFrom<MoveTokenDepositedEvent> for EmittedSuiToEthTokenBridgeV1 {
     type Error = BridgeError;
 
     fn try_from(event: MoveTokenDepositedEvent) -> BridgeResult<Self> {
+        if event.amount_sui_adjusted == 0 {
+            return Err(BridgeError::ZeroValueBridgeTransfer(format!(
+                "Failed to convert MoveTokenDepositedEvent to EmittedSuiToEthTokenBridgeV1. Manual intervention is required. 0 value transfer should not be allowed in Move: {:?}",
+                event,
+            )));
+        }
+
         let token_id = event.token_type;
         let sui_chain_id = BridgeChainId::try_from(event.source_chain).map_err(|_e| {
             BridgeError::Generic(format!(
@@ -320,10 +355,12 @@ crate::declare_events!(
     // because the info provided by validators could be invalid
     CommitteeMemberRegistration(MoveTypeCommitteeMemberRegistration) => ("committee::CommitteeMemberRegistration", MoveTypeCommitteeMemberRegistration),
     CommitteeUpdateEvent(CommitteeUpdate) => ("committee::CommitteeUpdateEvent", MoveCommitteeUpdateEvent),
+    CommitteeMemberUrlUpdateEvent(CommitteeMemberUrlUpdateEvent) => ("committee::CommitteeMemberUrlUpdateEvent", MoveCommitteeMemberUrlUpdateEvent),
     BlocklistValidatorEvent(BlocklistValidatorEvent) => ("committee::BlocklistValidatorEvent", MoveBlocklistValidatorEvent),
     TokenRegistrationEvent(TokenRegistrationEvent) => ("treasury::TokenRegistrationEvent", MoveTokenRegistrationEvent),
     NewTokenEvent(NewTokenEvent) => ("treasury::NewTokenEvent", MoveNewTokenEvent),
     UpdateTokenPriceEvent(UpdateTokenPriceEvent) => ("treasury::UpdateTokenPriceEvent", UpdateTokenPriceEvent),
+    UpdateRouteLimitEvent(UpdateRouteLimitEvent) => ("limiter::UpdateRouteLimitEvent", UpdateRouteLimitEvent),
 
     // Add new event types here. Format:
     // EnumVariantName(Struct) => ("{module}::{event_struct}", CorrespondingMoveStruct)
@@ -386,10 +423,12 @@ impl SuiBridgeEvent {
             SuiBridgeEvent::EmergencyOpEvent(_event) => None,
             SuiBridgeEvent::CommitteeMemberRegistration(_event) => None,
             SuiBridgeEvent::CommitteeUpdateEvent(_event) => None,
+            SuiBridgeEvent::CommitteeMemberUrlUpdateEvent(_event) => None,
             SuiBridgeEvent::BlocklistValidatorEvent(_event) => None,
             SuiBridgeEvent::TokenRegistrationEvent(_event) => None,
             SuiBridgeEvent::NewTokenEvent(_event) => None,
             SuiBridgeEvent::UpdateTokenPriceEvent(_event) => None,
+            SuiBridgeEvent::UpdateRouteLimitEvent(_event) => None,
         }
     }
 }
@@ -399,6 +438,7 @@ pub mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::crypto::BridgeAuthorityKeyPair;
     use crate::e2e_tests::test_utils::BridgeTestClusterBuilder;
     use crate::types::BridgeAction;
     use crate::types::SuiToEthBridgeAction;
@@ -408,6 +448,7 @@ pub mod tests {
     use sui_types::base_types::SuiAddress;
     use sui_types::bridge::BridgeChainId;
     use sui_types::bridge::TOKEN_ID_SUI;
+    use sui_types::crypto::get_key_pair;
     use sui_types::digests::TransactionDigest;
     use sui_types::event::EventID;
     use sui_types::Identifier;
@@ -461,12 +502,13 @@ pub mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn test_bridge_events_conversion() {
+    async fn test_bridge_events_when_init() {
         telemetry_subscribers::init_for_testing();
         init_all_struct_tags();
         let mut bridge_test_cluster = BridgeTestClusterBuilder::new()
-            .with_eth_env(true)
+            .with_eth_env(false)
             .with_bridge_cluster(false)
+            .with_num_validators(2)
             .build()
             .await;
 
@@ -495,5 +537,50 @@ pub mod tests {
         assert_eq!(mask, 0xF);
 
         // TODO: trigger other events and make sure they are converted correctly
+    }
+
+    #[test]
+    fn test_conversion_for_committee_member_url_update_event() {
+        let (_, kp): (_, BridgeAuthorityKeyPair) = get_key_pair();
+        let new_url = "https://example.com:443";
+        let event: CommitteeMemberUrlUpdateEvent = MoveCommitteeMemberUrlUpdateEvent {
+            member: kp.public.as_bytes().to_vec(),
+            new_url: new_url.as_bytes().to_vec(),
+        }
+        .try_into()
+        .unwrap();
+        assert_eq!(event.member, kp.public);
+        assert_eq!(event.new_url, new_url);
+
+        CommitteeMemberUrlUpdateEvent::try_from(MoveCommitteeMemberUrlUpdateEvent {
+            member: vec![1, 2, 3],
+            new_url: new_url.as_bytes().to_vec(),
+        })
+        .unwrap_err();
+
+        CommitteeMemberUrlUpdateEvent::try_from(MoveCommitteeMemberUrlUpdateEvent {
+            member: kp.public.as_bytes().to_vec(),
+            new_url: [240, 130, 130, 172].into(),
+        })
+        .unwrap_err();
+    }
+
+    // TODO: add conversion tests for other events
+
+    #[test]
+    fn test_0_sui_amount_conversion_for_sui_event() {
+        let emitted_event = MoveTokenDepositedEvent {
+            seq_num: 1,
+            source_chain: BridgeChainId::SuiTestnet as u8,
+            sender_address: SuiAddress::random_for_testing_only().to_vec(),
+            target_chain: BridgeChainId::EthSepolia as u8,
+            target_address: EthAddress::random().as_bytes().to_vec(),
+            token_type: TOKEN_ID_SUI,
+            amount_sui_adjusted: 0,
+        };
+        match EmittedSuiToEthTokenBridgeV1::try_from(emitted_event).unwrap_err() {
+            BridgeError::ZeroValueBridgeTransfer(_) => (),
+            other => panic!("Expected Generic error, got: {:?}", other),
+        }
     }
 }

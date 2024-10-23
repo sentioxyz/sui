@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { fromB64, toB58 } from '@mysten/bcs';
+import { fromBase64, toBase58 } from '@mysten/bcs';
 import { bcs } from '@mysten/sui/bcs';
 import type {
 	SuiArgument,
@@ -32,10 +32,10 @@ export function mapGraphQLTransactionBlockToRpcTransactionBlock(
 			owner: balanceChange.owner?.asObject?.address
 				? {
 						ObjectOwner: balanceChange.owner?.asObject?.address,
-				  }
+					}
 				: {
 						AddressOwner: balanceChange.owner?.asAddress?.address!,
-				  },
+					},
 		})),
 		...(typeof transactionBlock.effects?.checkpoint?.sequenceNumber === 'number'
 			? { checkpoint: transactionBlock.effects.checkpoint.sequenceNumber.toString() }
@@ -47,9 +47,9 @@ export function mapGraphQLTransactionBlockToRpcTransactionBlock(
 		...(options?.showRawEffects
 			? {
 					rawEffects: transactionBlock.effects?.bcs
-						? Array.from(fromB64(transactionBlock.effects?.bcs))
+						? Array.from(fromBase64(transactionBlock.effects?.bcs))
 						: undefined,
-			  }
+				}
 			: {}),
 		effects: options?.showEffects ? effects : undefined,
 		...(errors ? { errors: errors } : {}),
@@ -73,9 +73,9 @@ export function mapGraphQLTransactionBlockToRpcTransactionBlock(
 					transaction:
 						transactionBlock.rawTransaction &&
 						mapTransactionBlockToInput(
-							bcs.SenderSignedData.parse(fromB64(transactionBlock.rawTransaction))[0],
+							bcs.SenderSignedData.parse(fromBase64(transactionBlock.rawTransaction))[0],
 						),
-			  }
+				}
 			: {}),
 		objectChanges: options?.showObjectChanges
 			? mapObjectChanges(transactionBlock, effects)
@@ -214,7 +214,7 @@ function mapTransactionInput(input: typeof bcs.CallArg.$inferType): SuiCallArg {
 	if (input.Pure) {
 		return {
 			type: 'pure',
-			value: fromB64(input.Pure.bytes),
+			value: fromBase64(input.Pure.bytes),
 		};
 	}
 
@@ -340,13 +340,13 @@ function mapTransactionArgument(arg: typeof bcs.Argument.$inferType): SuiArgumen
 	throw new Error(`Unknown argument type ${arg}`);
 }
 
-const OBJECT_DIGEST_DELETED = toB58(Uint8Array.from({ length: 32 }, () => 99));
-const OBJECT_DIGEST_WRAPPED = toB58(Uint8Array.from({ length: 32 }, () => 88));
-const OBJECT_DIGEST_ZERO = toB58(Uint8Array.from({ length: 32 }, () => 0));
+const OBJECT_DIGEST_DELETED = toBase58(Uint8Array.from({ length: 32 }, () => 99));
+const OBJECT_DIGEST_WRAPPED = toBase58(Uint8Array.from({ length: 32 }, () => 88));
+const OBJECT_DIGEST_ZERO = toBase58(Uint8Array.from({ length: 32 }, () => 0));
 const ADDRESS_ZERO = normalizeSuiAddress('0x0');
 
 export function mapEffects(data: string): SuiTransactionBlockResponse['effects'] {
-	const effects = bcs.TransactionEffects.parse(fromB64(data));
+	const effects = bcs.TransactionEffects.parse(fromBase64(data));
 
 	let effectsV1 = effects.V1;
 
@@ -416,7 +416,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 									digest: change.outputState.PackageWrite[1],
 								},
 								{ $kind: 'Immutable', Immutable: true },
-						  ] as const)
+							] as const)
 						: ([
 								{
 									objectId,
@@ -424,7 +424,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 									digest: change.outputState.ObjectWrite![0],
 								},
 								change.outputState.ObjectWrite![1],
-						  ] as const),
+							] as const),
 				),
 			mutated: effects.V2.changedObjects
 				.filter(
@@ -438,12 +438,12 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 								objectId,
 								version: Number(change.outputState.PackageWrite[0]) as unknown as string,
 								digest: change.outputState.PackageWrite[1],
-						  }
+							}
 						: {
 								objectId,
 								version: Number(effects.V2.lamportVersion) as unknown as string,
 								digest: change.outputState.ObjectWrite![0],
-						  },
+							},
 					change.outputState.ObjectWrite
 						? change.outputState.ObjectWrite[1]
 						: { $kind: 'Immutable', Immutable: true },
@@ -499,7 +499,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 							version: Number(effects.V2.lamportVersion) as unknown as string,
 						},
 						gasObject[1].outputState.ObjectWrite![1],
-				  ]
+					]
 				: [
 						{
 							objectId: ADDRESS_ZERO,
@@ -510,7 +510,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 							$kind: 'AddressOwner',
 							AddressOwner: ADDRESS_ZERO,
 						},
-				  ],
+					],
 			eventsDigest: effects.V2.eventsDigest,
 			dependencies: effects.V2.dependencies,
 		};
@@ -525,12 +525,12 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 		status: effectsV1.status.Success
 			? {
 					status: 'success',
-			  }
+				}
 			: {
 					status: 'failure',
 					// TODO: we don't have the error message from bcs effects
 					error: effectsV1.status.$kind,
-			  },
+				},
 		executedEpoch: effectsV1.executedEpoch,
 		gasUsed: effectsV1.gasUsed,
 		modifiedAtVersions: effectsV1.modifiedAtVersions.map(([objectId, sequenceNumber]) => ({
@@ -546,7 +546,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 						reference,
 						owner: mapEffectsOwner(owner),
 					})),
-			  }),
+				}),
 		...(effectsV1.mutated.length === 0
 			? {}
 			: {
@@ -554,7 +554,7 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 						reference,
 						owner: mapEffectsOwner(owner),
 					})),
-			  }),
+				}),
 		...(effectsV1.unwrapped.length === 0
 			? {}
 			: {
@@ -564,8 +564,8 @@ export function mapEffects(data: string): SuiTransactionBlockResponse['effects']
 							: effectsV1.unwrapped.map(([reference, owner]) => ({
 									reference,
 									owner: mapEffectsOwner(owner),
-							  })),
-			  }),
+								})),
+				}),
 		...(effectsV1.deleted.length === 0 ? {} : { deleted: effectsV1.deleted }),
 		...(effectsV1.unwrappedThenDeleted.length === 0
 			? {}

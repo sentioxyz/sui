@@ -121,7 +121,7 @@ Capability controlling the ability to upgrade a package.
  (Mutable) ID of the package that can be upgraded.
 </dd>
 <dt>
-<code>version: u64</code>
+<code>version: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  (Mutable) The number of upgrades that have been applied
@@ -272,7 +272,7 @@ Only be able to change dependencies.
 This <code><a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a></code> has already authorized a pending upgrade.
 
 
-<pre><code><b>const</b> <a href="package.md#0x2_package_EAlreadyAuthorized">EAlreadyAuthorized</a>: u64 = 2;
+<pre><code><b>const</b> <a href="package.md#0x2_package_EAlreadyAuthorized">EAlreadyAuthorized</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 2;
 </code></pre>
 
 
@@ -282,7 +282,7 @@ This <code><a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a></code> has
 This <code><a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a></code> has not authorized an upgrade.
 
 
-<pre><code><b>const</b> <a href="package.md#0x2_package_ENotAuthorized">ENotAuthorized</a>: u64 = 3;
+<pre><code><b>const</b> <a href="package.md#0x2_package_ENotAuthorized">ENotAuthorized</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 3;
 </code></pre>
 
 
@@ -293,7 +293,7 @@ Tried to create a <code><a href="package.md#0x2_package_Publisher">Publisher</a>
 one-time witness.
 
 
-<pre><code><b>const</b> <a href="package.md#0x2_package_ENotOneTimeWitness">ENotOneTimeWitness</a>: u64 = 0;
+<pre><code><b>const</b> <a href="package.md#0x2_package_ENotOneTimeWitness">ENotOneTimeWitness</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 0;
 </code></pre>
 
 
@@ -303,7 +303,7 @@ one-time witness.
 Tried to set a less restrictive policy than currently in place.
 
 
-<pre><code><b>const</b> <a href="package.md#0x2_package_ETooPermissive">ETooPermissive</a>: u64 = 1;
+<pre><code><b>const</b> <a href="package.md#0x2_package_ETooPermissive">ETooPermissive</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 1;
 </code></pre>
 
 
@@ -313,7 +313,7 @@ Tried to set a less restrictive policy than currently in place.
 Trying to commit an upgrade to the wrong <code><a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a></code>.
 
 
-<pre><code><b>const</b> <a href="package.md#0x2_package_EWrongUpgradeCap">EWrongUpgradeCap</a>: u64 = 4;
+<pre><code><b>const</b> <a href="package.md#0x2_package_EWrongUpgradeCap">EWrongUpgradeCap</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 4;
 </code></pre>
 
 
@@ -547,7 +547,7 @@ The most recent version of the package, increments by one for each
 successfully applied upgrade.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_version">version</a>(cap: &<a href="package.md#0x2_package_UpgradeCap">package::UpgradeCap</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_version">version</a>(cap: &<a href="package.md#0x2_package_UpgradeCap">package::UpgradeCap</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -556,7 +556,7 @@ successfully applied upgrade.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_version">version</a>(cap: &<a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>): u64 {
+<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_version">version</a>(cap: &<a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
     cap.version
 }
 </code></pre>
@@ -899,11 +899,7 @@ for the upgrade to succeed.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_authorize_upgrade">authorize_upgrade</a>(
-    cap: &<b>mut</b> <a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>,
-    policy: u8,
-    digest: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;
-): <a href="package.md#0x2_package_UpgradeTicket">UpgradeTicket</a> {
+<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_authorize_upgrade">authorize_upgrade</a>(cap: &<b>mut</b> <a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>, policy: u8, digest: <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;): <a href="package.md#0x2_package_UpgradeTicket">UpgradeTicket</a> {
     <b>let</b> id_zero = @0x0.to_id();
     <b>assert</b>!(cap.<a href="package.md#0x2_package">package</a> != id_zero, <a href="package.md#0x2_package_EAlreadyAuthorized">EAlreadyAuthorized</a>);
     <b>assert</b>!(policy &gt;= cap.policy, <a href="package.md#0x2_package_ETooPermissive">ETooPermissive</a>);
@@ -941,10 +937,7 @@ the upgrade.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_commit_upgrade">commit_upgrade</a>(
-    cap: &<b>mut</b> <a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>,
-    receipt: <a href="package.md#0x2_package_UpgradeReceipt">UpgradeReceipt</a>,
-) {
+<pre><code><b>public</b> <b>fun</b> <a href="package.md#0x2_package_commit_upgrade">commit_upgrade</a>(cap: &<b>mut</b> <a href="package.md#0x2_package_UpgradeCap">UpgradeCap</a>, receipt: <a href="package.md#0x2_package_UpgradeReceipt">UpgradeReceipt</a>) {
     <b>let</b> <a href="package.md#0x2_package_UpgradeReceipt">UpgradeReceipt</a> { cap: cap_id, <a href="package.md#0x2_package">package</a> } = receipt;
 
     <b>assert</b>!(<a href="object.md#0x2_object_id">object::id</a>(cap) == cap_id, <a href="package.md#0x2_package_EWrongUpgradeCap">EWrongUpgradeCap</a>);

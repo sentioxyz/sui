@@ -7,16 +7,17 @@ use move_binary_format::file_format::{
     AbilitySet, DatatypeTyParameter, EnumDefinitionIndex, FunctionDefinitionIndex,
     Signature as MoveSignature, SignatureIndex, Visibility,
 };
-use move_command_line_common::error_bitset::ErrorBitset;
+use move_command_line_common::display::RenderResult;
+use move_command_line_common::{display::try_render_constant, error_bitset::ErrorBitset};
 use move_core_types::annotated_value::MoveEnumLayout;
 use move_core_types::language_storage::ModuleId;
-use move_core_types::u256::U256;
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::{borrow::Cow, collections::BTreeMap};
 use sui_types::base_types::is_primitive_type_tag;
 use sui_types::transaction::{Argument, CallArg, Command, ProgrammableTransaction};
+use sui_types::type_input::{StructInput, TypeInput};
 
 use crate::error::Error;
 use move_binary_format::errors::Location;
@@ -126,12 +127,13 @@ pub enum ErrorConstants {
     /// No constant information is available, only a line number.
     None,
     /// The error is a complete error, with an error identifier and constant that can be rendered.
-    /// The the rendered string representation of the constant is returned only when the contant
+    /// The rendered string representation of the constant is returned only when the contant
     /// value is one of the following types:
     /// * A vector of bytes convertible to a valid UTF-8 string; or
     /// * A numeric value (u8, u16, u32, u64, u128, u256); or
     /// * A boolean value; or
     /// * An address value
+    ///
     /// Otherwise, the `Raw` bytes of the error constant are returned.
     Rendered {
         /// The name of the error constant.
@@ -464,11 +466,14 @@ impl<S: PackageStore> Resolver<S> {
                 return Ok(());
             };
 
-            if let Some(prev) = type_.replace(tag.clone()) {
-                // SAFETY: We just inserted `tag` in here.
-                let curr = type_.take().unwrap();
-                return Err(Error::InputTypeConflict(ix, prev, curr));
-            };
+            match type_ {
+                None => *type_ = Some(tag.clone()),
+                Some(prev) => {
+                    if prev != tag {
+                        return Err(Error::InputTypeConflict(ix, prev.clone(), tag.clone()));
+                    }
+                }
+            }
 
             Ok(())
         };
@@ -499,9 +504,12 @@ impl<S: PackageStore> Resolver<S> {
                     }
                 }
 
-                Command::MakeMoveVec(Some(tag), elems) if is_primitive_type_tag(tag) => {
-                    for elem in elems {
-                        register_type(elem, tag)?;
+                Command::MakeMoveVec(Some(tag), elems) => {
+                    let tag = as_type_tag(tag)?;
+                    if is_primitive_type_tag(&tag) {
+                        for elem in elems {
+                            register_type(elem, &tag)?;
+                        }
                     }
                 }
 
@@ -594,40 +602,16 @@ impl<S: PackageStore> Resolver<S> {
             .and_then(|x| String::from_utf8(x).ok())?;
         let bytes = error_value_constant.data.clone();
 
-        let rendered = match &error_value_constant.type_ {
-            SignatureToken::Vector(inner_ty) if inner_ty.as_ref() == &SignatureToken::U8 => {
-                bcs::from_bytes::<Vec<u8>>(&bytes)
-                    .ok()
-                    .and_then(|x| String::from_utf8(x).ok())
-            }
-            SignatureToken::U8 => bcs::from_bytes::<u8>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::U16 => bcs::from_bytes::<u16>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::U32 => bcs::from_bytes::<u32>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::U64 => bcs::from_bytes::<u64>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::U128 => bcs::from_bytes::<u128>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::U256 => bcs::from_bytes::<U256>(&bytes).ok().map(|x| x.to_string()),
-            SignatureToken::Address => bcs::from_bytes::<AccountAddress>(&bytes)
-                .ok()
-                .map(|x| x.to_canonical_string(true)),
-            SignatureToken::Bool => bcs::from_bytes::<bool>(&bytes).ok().map(|x| x.to_string()),
-
-            SignatureToken::Signer
-            | SignatureToken::Vector(_)
-            | SignatureToken::Datatype(_)
-            | SignatureToken::DatatypeInstantiation(_)
-            | SignatureToken::Reference(_)
-            | SignatureToken::MutableReference(_)
-            | SignatureToken::TypeParameter(_) => None,
-        };
+        let rendered = try_render_constant(error_value_constant);
 
         let error_info = match rendered {
-            None => ErrorConstants::Raw {
+            RenderResult::NotRendered => ErrorConstants::Raw {
                 identifier: error_identifier,
                 bytes,
             },
-            Some(error_constant) => ErrorConstants::Rendered {
+            RenderResult::AsString(s) | RenderResult::AsValue(s) => ErrorConstants::Rendered {
                 identifier: error_identifier,
-                constant: error_constant,
+                constant: s,
             },
         };
 
@@ -1047,7 +1031,7 @@ impl OpenSignature {
     /// parameters. This function does not check that the supplied type parameters are valid (meet
     /// the ability constraints of the struct or function this signature is part of), but will
     /// produce an error if the signature references a type parameter that is out of bounds.
-    pub fn instantiate(&self, type_params: &[TypeTag]) -> Result<Signature> {
+    pub fn instantiate(&self, type_params: &[TypeInput]) -> Result<Signature> {
         Ok(Signature {
             ref_: self.ref_,
             body: self.body.instantiate(type_params)?,
@@ -1090,7 +1074,7 @@ impl OpenSignatureBody {
         })
     }
 
-    fn instantiate(&self, type_params: &[TypeTag]) -> Result<TypeTag> {
+    fn instantiate(&self, type_params: &[TypeInput]) -> Result<TypeTag> {
         use OpenSignatureBody as O;
         use TypeTag as T;
 
@@ -1115,10 +1099,11 @@ impl OpenSignatureBody {
                     .collect::<Result<_>>()?,
             })),
 
-            O::TypeParameter(ix) => type_params
-                .get(*ix as usize)
-                .cloned()
-                .ok_or_else(|| Error::TypeParamOOB(*ix, type_params.len()))?,
+            O::TypeParameter(ix) => as_type_tag(
+                type_params
+                    .get(*ix as usize)
+                    .ok_or_else(|| Error::TypeParamOOB(*ix, type_params.len()))?,
+            )?,
         })
     }
 }
@@ -1473,10 +1458,10 @@ impl<'l> ResolutionContext<'l> {
                 }
 
                 (
-                    MoveTypeLayout::Struct(MoveStructLayout {
+                    MoveTypeLayout::Struct(Box::new(MoveStructLayout {
                         type_,
-                        fields: resolved_fields,
-                    }),
+                        fields: Box::new(resolved_fields),
+                    })),
                     field_depth + 1,
                 )
             }
@@ -1501,10 +1486,10 @@ impl<'l> ResolutionContext<'l> {
                 }
 
                 (
-                    MoveTypeLayout::Enum(MoveEnumLayout {
+                    MoveTypeLayout::Enum(Box::new(MoveEnumLayout {
                         type_,
                         variants: resolved_variants,
-                    }),
+                    })),
                     field_depth + 1,
                 )
             }
@@ -1568,7 +1553,7 @@ impl<'l> ResolutionContext<'l> {
 
             O::Datatype(key, params) => {
                 // SAFETY: `add_signature` ensures `datatypes` has an element with this key.
-                let def = &self.datatypes[&key];
+                let def = &self.datatypes[key];
 
                 let param_layouts = params
                     .iter()
@@ -1660,7 +1645,7 @@ impl<'l> ResolutionContext<'l> {
 
             O::Datatype(key, params) => {
                 // SAFETY: `add_signature` ensures `datatypes` has an element with this key.
-                let defining_id = &self.datatypes[&key].defining_id;
+                let defining_id = &self.datatypes[key].defining_id;
                 for param in params {
                     self.relocate_signature(param)?;
                 }
@@ -1688,6 +1673,38 @@ fn ident(s: &str) -> Result<Identifier> {
     Identifier::new(s).map_err(|_| Error::NotAnIdentifier(s.to_string()))
 }
 
+pub fn as_type_tag(type_input: &TypeInput) -> Result<TypeTag> {
+    use TypeInput as I;
+    use TypeTag as T;
+    Ok(match type_input {
+        I::Bool => T::Bool,
+        I::U8 => T::U8,
+        I::U16 => T::U16,
+        I::U32 => T::U32,
+        I::U64 => T::U64,
+        I::U128 => T::U128,
+        I::U256 => T::U256,
+        I::Address => T::Address,
+        I::Signer => T::Signer,
+        I::Vector(t) => T::Vector(Box::new(as_type_tag(t)?)),
+        I::Struct(s) => {
+            let StructInput {
+                address,
+                module,
+                name,
+                type_params,
+            } = s.as_ref();
+            let type_params = type_params.iter().map(as_type_tag).collect::<Result<_>>()?;
+            T::Struct(Box::new(StructTag {
+                address: *address,
+                module: ident(module)?,
+                name: ident(name)?,
+                type_params,
+            }))
+        }
+    })
+}
+
 /// Read and deserialize a signature index (from function parameter or return types) into a vector
 /// of signatures.
 fn read_signature(idx: SignatureIndex, bytecode: &CompiledModule) -> Result<Vec<OpenSignature>> {
@@ -1709,7 +1726,7 @@ mod tests {
     use std::sync::Arc;
     use std::{path::PathBuf, str::FromStr, sync::RwLock};
     use sui_types::base_types::random_object_ref;
-    use sui_types::transaction::{ObjectArg, ProgrammableMoveCall};
+    use sui_types::transaction::ObjectArg;
 
     use move_compiler::compiled_unit::NamedCompiledModule;
     use sui_move_build::{BuildConfig, CompiledPackage};
@@ -2263,7 +2280,7 @@ mod tests {
     #[tokio::test]
     async fn test_signature_instantiation() {
         use OpenSignatureBody as O;
-        use TypeTag as T;
+        use TypeInput as T;
 
         let sig = O::Datatype(
             key("0x2::table::Table"),
@@ -2282,7 +2299,7 @@ mod tests {
     #[tokio::test]
     async fn test_signature_instantiation_error() {
         use OpenSignatureBody as O;
-        use TypeTag as T;
+        use TypeInput as T;
 
         let sig = O::Datatype(
             key("0x2::table::Table"),
@@ -2591,13 +2608,13 @@ mod tests {
                     I::Pure(bcs::to_bytes("hello").unwrap()),
                     I::Pure(bcs::to_bytes("world").unwrap()),
                 ],
-                commands: vec![Command::MoveCall(Box::new(ProgrammableMoveCall {
-                    package: addr("0xe0").into(),
-                    module: ident_str!("m").to_owned(),
-                    function: ident_str!("foo").to_owned(),
-                    type_arguments: vec![t],
-                    arguments: (0..=6).map(Argument::Input).collect(),
-                }))],
+                commands: vec![Command::move_call(
+                    addr("0xe0").into(),
+                    ident_str!("m").to_owned(),
+                    ident_str!("foo").to_owned(),
+                    vec![t],
+                    (0..=6).map(Argument::Input).collect(),
+                )],
             }
         }
 
@@ -2643,10 +2660,70 @@ mod tests {
         insta::assert_snapshot!(output);
     }
 
+    /// Like the test above, but the inputs are re-used, which we want to detect (but is fine
+    /// because they are assigned the same type at each usage).
+    #[tokio::test]
+    async fn test_pure_input_layouts_overlapping() {
+        use CallArg as I;
+        use ObjectArg::ImmOrOwnedObject as O;
+        use TypeTag as T;
+
+        let (_, cache) = package_cache([
+            (1, build_package("std"), std_types()),
+            (1, build_package("sui"), sui_types()),
+            (1, build_package("e0"), e0_types()),
+        ]);
+
+        let resolver = Resolver::new(cache);
+
+        // Helper function to generate a PTB calling 0xe0::m::foo.
+        let ptb = ProgrammableTransaction {
+            inputs: vec![
+                I::Object(O(random_object_ref())),
+                I::Pure(bcs::to_bytes(&42u64).unwrap()),
+                I::Object(O(random_object_ref())),
+                I::Pure(bcs::to_bytes(&43u64).unwrap()),
+                I::Object(O(random_object_ref())),
+                I::Pure(bcs::to_bytes("hello").unwrap()),
+                I::Pure(bcs::to_bytes("world").unwrap()),
+            ],
+            commands: vec![
+                Command::move_call(
+                    addr("0xe0").into(),
+                    ident_str!("m").to_owned(),
+                    ident_str!("foo").to_owned(),
+                    vec![T::U64],
+                    (0..=6).map(Argument::Input).collect(),
+                ),
+                Command::move_call(
+                    addr("0xe0").into(),
+                    ident_str!("m").to_owned(),
+                    ident_str!("foo").to_owned(),
+                    vec![T::U64],
+                    (0..=6).map(Argument::Input).collect(),
+                ),
+            ],
+        };
+
+        let inputs = resolver.pure_input_layouts(&ptb).await.unwrap();
+
+        // Make the output format a little nicer for the snapshot
+        let mut output = String::new();
+        for input in inputs {
+            if let Some(layout) = input {
+                output += &format!("{layout:#}\n");
+            } else {
+                output += "???\n";
+            }
+        }
+
+        insta::assert_snapshot!(output);
+    }
     #[tokio::test]
     async fn test_pure_input_layouts_conflicting() {
         use CallArg as I;
         use ObjectArg::ImmOrOwnedObject as O;
+        use TypeInput as TI;
         use TypeTag as T;
 
         let (_, cache) = package_cache([
@@ -2668,16 +2745,16 @@ mod tests {
                 I::Pure(bcs::to_bytes("world").unwrap()),
             ],
             commands: vec![
-                Command::MoveCall(Box::new(ProgrammableMoveCall {
-                    package: addr("0xe0").into(),
-                    module: ident_str!("m").to_owned(),
-                    function: ident_str!("foo").to_owned(),
-                    type_arguments: vec![T::U64],
-                    arguments: (0..=6).map(Argument::Input).collect(),
-                })),
+                Command::move_call(
+                    addr("0xe0").into(),
+                    ident_str!("m").to_owned(),
+                    ident_str!("foo").to_owned(),
+                    vec![T::U64],
+                    (0..=6).map(Argument::Input).collect(),
+                ),
                 // This command is using the input that was previously used as a U64, but now as a
                 // U32, which will cause an error.
-                Command::MakeMoveVec(Some(T::U32), vec![Argument::Input(3)]),
+                Command::MakeMoveVec(Some(TI::U32), vec![Argument::Input(3)]),
             ],
         };
 
@@ -2883,7 +2960,7 @@ mod tests {
     fn build_package(dir: &str) -> CompiledPackage {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.extend(["tests", "packages", dir]);
-        BuildConfig::new_for_testing().build(path).unwrap()
+        BuildConfig::new_for_testing().build(&path).unwrap()
     }
 
     fn addr(a: &str) -> AccountAddress {

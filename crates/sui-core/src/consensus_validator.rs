@@ -3,14 +3,11 @@
 
 use std::sync::Arc;
 
-use consensus_core::{TransactionVerifier, ValidationError};
+use consensus_core::{TransactionIndex, TransactionVerifier, ValidationError};
 use eyre::WrapErr;
 use fastcrypto_tbls::dkg;
 use mysten_metrics::monitored_scope;
-use narwhal_types::{validate_batch_version, BatchAPI};
-use narwhal_worker::TransactionValidator;
 use prometheus::{register_int_counter_with_registry, IntCounter, Registry};
-use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     error::SuiError,
     messages_consensus::{ConsensusTransaction, ConsensusTransactionKind},
@@ -60,7 +57,7 @@ impl SuiTxValidator {
         let mut ckpt_batch = Vec::new();
         for tx in txs.into_iter() {
             match tx {
-                ConsensusTransactionKind::UserTransaction(certificate) => {
+                ConsensusTransactionKind::CertifiedTransaction(certificate) => {
                     cert_batch.push(*certificate);
 
                     // if !certificate.contains_shared_object() {
@@ -85,10 +82,17 @@ impl SuiTxValidator {
                         return Err(SuiError::InvalidDkgMessageSize.into());
                     }
                 }
+
+                ConsensusTransactionKind::CapabilityNotification(_) => {}
+
                 ConsensusTransactionKind::EndOfPublish(_)
-                | ConsensusTransactionKind::CapabilityNotification(_)
                 | ConsensusTransactionKind::NewJWKFetched(_, _, _)
+                | ConsensusTransactionKind::CapabilityNotificationV2(_)
                 | ConsensusTransactionKind::RandomnessStateUpdate(_, _) => {}
+
+                ConsensusTransactionKind::UserTransaction(_tx) => {
+                    // TODO: implement verification for uncertified user transactions if needed
+                }
             }
         }
 
@@ -132,41 +136,10 @@ fn tx_from_bytes(tx: &[u8]) -> Result<ConsensusTransaction, eyre::Report> {
         .wrap_err("Malformed transaction (failed to deserialize)")
 }
 
-impl TransactionValidator for SuiTxValidator {
-    type Error = eyre::Report;
-
-    fn validate(&self, _tx: &[u8]) -> Result<(), Self::Error> {
-        // We only accept transactions from local sui instance so no need to re-verify it
-        Ok(())
-    }
-
-    fn validate_batch(
-        &self,
-        b: &narwhal_types::Batch,
-        protocol_config: &ProtocolConfig,
-    ) -> Result<(), Self::Error> {
+impl TransactionVerifier for SuiTxValidator {
+    fn verify_batch(&self, batch: &[&[u8]]) -> Result<(), ValidationError> {
         let _scope = monitored_scope("ValidateBatch");
 
-        // TODO: Remove once we have removed BatchV1 from the codebase.
-        validate_batch_version(b, protocol_config)
-            .map_err(|err| eyre::eyre!(format!("Invalid Batch: {err}")))?;
-
-        let txs = b
-            .transactions()
-            .iter()
-            .map(|tx| tx_from_bytes(tx).map(|tx| tx.kind))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.validate_transactions(txs)
-    }
-}
-
-impl TransactionVerifier for SuiTxValidator {
-    fn verify_batch(
-        &self,
-        _protocol_config: &ProtocolConfig,
-        batch: &[&[u8]],
-    ) -> Result<(), ValidationError> {
         let txs = batch
             .iter()
             .map(|tx| {
@@ -178,6 +151,10 @@ impl TransactionVerifier for SuiTxValidator {
 
         self.validate_transactions(txs)
             .map_err(|e| ValidationError::InvalidTransaction(e.to_string()))
+    }
+
+    fn vote_batch(&self, _batch: &[&[u8]]) -> Vec<TransactionIndex> {
+        vec![]
     }
 }
 
@@ -209,9 +186,7 @@ impl SuiTxValidatorMetrics {
 mod tests {
     use std::sync::Arc;
 
-    use narwhal_test_utils::latest_protocol_version;
-    use narwhal_types::{Batch, BatchV1};
-    use narwhal_worker::TransactionValidator;
+    use consensus_core::TransactionVerifier as _;
     use sui_macros::sim_test;
     use sui_types::{
         crypto::Ed25519SuiSignature, messages_consensus::ConsensusTransaction, object::Object,
@@ -233,15 +208,13 @@ mod tests {
         let shared_object = Object::shared_for_testing();
         objects.push(shared_object.clone());
 
-        let latest_protocol_config = &latest_protocol_version();
-
         let network_config =
             sui_swarm_config::network_config_builder::ConfigBuilder::new_with_temp_dir()
                 .with_objects(objects.clone())
                 .build();
 
         let state = TestAuthorityBuilder::new()
-            .with_network_config(&network_config)
+            .with_network_config(&network_config, 0)
             .build()
             .await;
         let name1 = state.name;
@@ -260,7 +233,7 @@ mod tests {
             state.transaction_manager().clone(),
             metrics,
         );
-        let res = validator.validate(&first_transaction_bytes);
+        let res = validator.verify_batch(&[&first_transaction_bytes]);
         assert!(res.is_ok(), "{res:?}");
 
         let transaction_bytes: Vec<_> = certificates
@@ -271,8 +244,8 @@ mod tests {
             })
             .collect();
 
-        let batch = Batch::new(transaction_bytes, latest_protocol_config);
-        let res_batch = validator.validate_batch(&batch, latest_protocol_config);
+        let batch: Vec<_> = transaction_bytes.iter().map(|t| t.as_slice()).collect();
+        let res_batch = validator.verify_batch(&batch);
         assert!(res_batch.is_ok(), "{res_batch:?}");
 
         let bogus_transaction_bytes: Vec<_> = certificates
@@ -287,21 +260,11 @@ mod tests {
             })
             .collect();
 
-        let batch = Batch::new(bogus_transaction_bytes, latest_protocol_config);
-        let res_batch = validator.validate_batch(&batch, latest_protocol_config);
+        let batch: Vec<_> = bogus_transaction_bytes
+            .iter()
+            .map(|t| t.as_slice())
+            .collect();
+        let res_batch = validator.verify_batch(&batch);
         assert!(res_batch.is_err());
-
-        // TODO: Remove once we have removed BatchV1 from the codebase.
-        let batch_v1 = Batch::V1(BatchV1::new(vec![]));
-
-        // Case #1: Receive BatchV1 but network has upgraded past v11 so we fail because we expect BatchV2
-        let res_batch = validator.validate_batch(&batch_v1, latest_protocol_config);
-        assert!(res_batch.is_err());
-
-        let batch_v2 = Batch::new(vec![], latest_protocol_config);
-
-        // Case #2: Receive BatchV2 and network is upgraded past v11 so we are okay
-        let res_batch = validator.validate_batch(&batch_v2, latest_protocol_config);
-        assert!(res_batch.is_ok());
     }
 }

@@ -124,7 +124,8 @@ module bridge::message {
     }
 
     public fun extract_blocklist_payload(message: &BridgeMessage): Blocklist {
-        // blocklist payload should consist of one byte blocklist type, and list of 33 bytes ecdsa pub keys
+        // blocklist payload should consist of one byte blocklist type, and list of 20 bytes evm addresses
+        // derived from ECDSA public keys
         let mut bcs = bcs::new(message.payload);
         let blocklist_type = bcs.peel_u8();
         let mut address_count = bcs.peel_u8();
@@ -661,5 +662,10 @@ module bridge::message {
             token_type_names,
             token_prices,
         }
+    }
+
+    #[test_only]
+    public(package) fun unpack_message(msg: BridgeMessageKey): (u8, u8, u64) {
+        (msg.source_chain, msg.message_type, msg.bridge_seq_num)
     }
 }

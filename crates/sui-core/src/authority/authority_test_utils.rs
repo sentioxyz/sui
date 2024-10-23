@@ -43,6 +43,7 @@ pub async fn send_and_confirm_transaction_(
         fullnode,
         transaction,
         with_shared,
+        true,
     )
     .await?;
     Ok((txn, effects))
@@ -54,6 +55,8 @@ pub async fn certify_transaction(
 ) -> Result<VerifiedCertificate, SuiError> {
     // Make the initial request
     let epoch_store = authority.load_epoch_store_one_call_per_task();
+    // TODO: Move this check to a more appropriate place.
+    transaction.validity_check(epoch_store.protocol_config(), epoch_store.epoch())?;
     let transaction = epoch_store.verify_transaction(transaction).unwrap();
 
     let response = authority
@@ -75,6 +78,7 @@ pub async fn execute_certificate_with_execution_error(
     fullnode: Option<&AuthorityState>,
     certificate: VerifiedCertificate,
     with_shared: bool, // transaction includes shared objects
+    fake_consensus: bool,
 ) -> Result<
     (
         CertifiedTransaction,
@@ -88,7 +92,8 @@ pub async fn execute_certificate_with_execution_error(
     // for testing and regression detection.
     // We must do this before sending to consensus, otherwise consensus may already
     // lead to transaction execution and state change.
-    let state_acc = StateAccumulator::new(authority.get_accumulator_store().clone());
+    let state_acc =
+        StateAccumulator::new_for_tests(authority.get_accumulator_store().clone(), &epoch_store);
     let include_wrapped_tombstone = !authority
         .epoch_store_for_testing()
         .protocol_config()
@@ -97,9 +102,30 @@ pub async fn execute_certificate_with_execution_error(
         state_acc.accumulate_cached_live_object_set_for_testing(include_wrapped_tombstone);
 
     if with_shared {
-        send_consensus(authority, &certificate).await;
+        if fake_consensus {
+            send_consensus(authority, &certificate).await;
+        } else {
+            // Just set object locks directly if send_consensus is not requested.
+            authority
+                .epoch_store_for_testing()
+                .assign_shared_object_versions_for_tests(
+                    authority.get_object_cache_reader().as_ref(),
+                    &vec![VerifiedExecutableTransaction::new_from_certificate(
+                        certificate.clone(),
+                    )],
+                )
+                .await?;
+        }
         if let Some(fullnode) = fullnode {
-            send_consensus(fullnode, &certificate).await;
+            fullnode
+                .epoch_store_for_testing()
+                .assign_shared_object_versions_for_tests(
+                    fullnode.get_object_cache_reader().as_ref(),
+                    &vec![VerifiedExecutableTransaction::new_from_certificate(
+                        certificate.clone(),
+                    )],
+                )
+                .await?;
         }
     }
 
@@ -130,7 +156,8 @@ pub async fn send_and_confirm_transaction_with_execution_error(
     authority: &AuthorityState,
     fullnode: Option<&AuthorityState>,
     transaction: Transaction,
-    with_shared: bool, // transaction includes shared objects
+    with_shared: bool,    // transaction includes shared objects
+    fake_consensus: bool, // runs consensus handler if true
 ) -> Result<
     (
         CertifiedTransaction,
@@ -140,7 +167,14 @@ pub async fn send_and_confirm_transaction_with_execution_error(
     SuiError,
 > {
     let certificate = certify_transaction(authority, transaction).await?;
-    execute_certificate_with_execution_error(authority, fullnode, certificate, with_shared).await
+    execute_certificate_with_execution_error(
+        authority,
+        fullnode,
+        certificate,
+        with_shared,
+        fake_consensus,
+    )
+    .await
 }
 
 pub async fn init_state_validator_with_fullnode() -> (Arc<AuthorityState>, Arc<AuthorityState>) {
@@ -343,7 +377,7 @@ pub async fn enqueue_all_and_execute_all(
     );
     let mut output = Vec::new();
     for cert in certificates {
-        let effects = authority.notify_read_effects(&cert).await?;
+        let effects = authority.notify_read_effects(*cert.digest()).await?;
         output.push(effects);
     }
     Ok(output)
@@ -436,7 +470,7 @@ pub async fn send_batch_consensus_no_execution(
 }
 
 pub fn build_test_modules_with_dep_addr(
-    path: PathBuf,
+    path: &Path,
     dep_original_addresses: impl IntoIterator<Item = (&'static str, ObjectID)>,
     dep_ids: impl IntoIterator<Item = (&'static str, ObjectID)>,
 ) -> CompiledPackage {
@@ -478,14 +512,14 @@ pub fn build_test_modules_with_dep_addr(
 /// must be the original IDs of names.
 /// dep_ids are the IDs of the dependencies of the package, in the latest version (if there were upgrades).
 pub async fn publish_package_on_single_authority(
-    path: PathBuf,
+    path: &Path,
     sender: SuiAddress,
     sender_key: &dyn Signer<Signature>,
     gas_payment: ObjectRef,
     dep_original_addresses: impl IntoIterator<Item = (&'static str, ObjectID)>,
     dep_ids: Vec<ObjectID>,
     state: &Arc<AuthorityState>,
-) -> SuiResult<(ObjectID, ObjectRef)> {
+) -> SuiResult<(TransactionDigest, (ObjectID, ObjectRef))> {
     let mut build_config = BuildConfig::new_for_testing();
     for (addr_name, obj_id) in dep_original_addresses {
         build_config
@@ -527,11 +561,11 @@ pub async fn publish_package_on_single_authority(
         .find(|c| matches!(c.1, Owner::AddressOwner(..)))
         .unwrap()
         .0;
-    Ok((package_id, cap_object))
+    Ok((*effects.transaction_digest(), (package_id, cap_object)))
 }
 
 pub async fn upgrade_package_on_single_authority(
-    path: PathBuf,
+    path: &Path,
     sender: SuiAddress,
     sender_key: &dyn Signer<Signature>,
     gas_payment: ObjectRef,
@@ -540,7 +574,7 @@ pub async fn upgrade_package_on_single_authority(
     dep_original_addresses: impl IntoIterator<Item = (&'static str, ObjectID)>,
     dep_id_mapping: impl IntoIterator<Item = (&'static str, ObjectID)>,
     state: &Arc<AuthorityState>,
-) -> SuiResult<ObjectID> {
+) -> SuiResult<(TransactionDigest, ObjectID)> {
     let package = build_test_modules_with_dep_addr(path, dep_original_addresses, dep_id_mapping);
 
     let with_unpublished_deps = false;
@@ -572,5 +606,5 @@ pub async fn upgrade_package_on_single_authority(
         .unwrap()
         .0
          .0;
-    Ok(package_id)
+    Ok((*effects.transaction_digest(), package_id))
 }

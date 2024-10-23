@@ -3,7 +3,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    ops::Bound::{Excluded, Included},
+    ops::Bound::Included,
 };
 
 use consensus_config::AuthorityIndex;
@@ -20,10 +20,12 @@ use crate::{
 };
 
 /// In-memory storage for testing.
+#[allow(unused)]
 pub(crate) struct MemStore {
     inner: RwLock<Inner>,
 }
 
+#[allow(unused)]
 struct Inner {
     blocks: BTreeMap<(Round, AuthorityIndex, BlockDigest), VerifiedBlock>,
     digests_by_authorities: BTreeSet<(AuthorityIndex, Round, BlockDigest)>,
@@ -184,7 +186,7 @@ impl Store for MemStore {
         let mut commits = vec![];
         for (_, commit) in inner.commits.range((
             Included((range.start(), CommitDigest::MIN)),
-            Excluded((range.end(), CommitDigest::MIN)),
+            Included((range.end(), CommitDigest::MAX)),
         )) {
             commits.push(commit.clone());
         }

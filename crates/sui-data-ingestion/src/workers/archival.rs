@@ -118,7 +118,7 @@ impl ArchivalWorker {
 
         let bytes = finalize_manifest(manifest)?;
         self.remote_store
-            .put(&Path::from("MANIFEST"), bytes)
+            .put(&Path::from("MANIFEST"), bytes.into())
             .await?;
         Ok(())
     }
@@ -133,7 +133,7 @@ impl ArchivalWorker {
         let mut cursor = Cursor::new(buffer);
         compress(&mut cursor, &mut compressed_buffer)?;
         self.remote_store
-            .put(&location, Bytes::from(compressed_buffer.clone()))
+            .put(&location, Bytes::from(compressed_buffer.clone()).into())
             .await?;
         Ok(Bytes::from(compressed_buffer))
     }
@@ -145,7 +145,7 @@ impl ArchivalWorker {
 
 #[async_trait]
 impl Worker for ArchivalWorker {
-    async fn process_checkpoint(&self, checkpoint: CheckpointData) -> Result<()> {
+    async fn process_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
         let mut state = self.state.lock().await;
         let sequence_number = checkpoint.checkpoint_summary.sequence_number;
         if sequence_number < state.checkpoint_range.start {
@@ -158,7 +158,7 @@ impl Worker for ArchivalWorker {
             state.last_commit_ms = checkpoint.checkpoint_summary.timestamp_ms;
         }
         let full_checkpoint_contents = FullCheckpointContents::from_contents_and_execution_data(
-            checkpoint.checkpoint_contents,
+            checkpoint.checkpoint_contents.clone(),
             checkpoint
                 .transactions
                 .iter()

@@ -1,7 +1,9 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { fromB64 } from '@mysten/bcs';
+import { tmpdir } from 'os';
+import path from 'path';
+import { fromBase64 } from '@mysten/bcs';
 import { describe, expect, it } from 'vitest';
 
 import { decodeSuiPrivateKey } from '../../src/cryptography';
@@ -43,7 +45,8 @@ describe('MultiSig with zklogin signature', () => {
 			],
 		});
 		let multisigAddr = multiSigPublicKey.toSuiAddress();
-		let toolbox = await setupWithFundedAddress(kp, multisigAddr);
+		const configPath = path.join(tmpdir(), 'client.yaml');
+		let toolbox = await setupWithFundedAddress(kp, multisigAddr, configPath);
 
 		// construct a transfer from the multisig address.
 		const tx = new Transaction();
@@ -92,7 +95,7 @@ describe('MultiSig with zklogin signature', () => {
 		const zkLoginSig = getZkLoginSignature({
 			inputs: zkLoginInputs,
 			maxEpoch: '2',
-			userSignature: fromB64(ephemeralSig),
+			userSignature: fromBase64(ephemeralSig),
 		});
 
 		// combine to multisig and execute the transaction.
@@ -102,6 +105,7 @@ describe('MultiSig with zklogin signature', () => {
 			signature,
 			options: { showEffects: true },
 		});
+		await client.waitForTransaction({ digest: result.digest });
 
 		// check the execution result and digest.
 		const localDigest = await tx.getDigest({ client });

@@ -1,66 +1,61 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::Result;
-use diesel::r2d2::R2D2Connection;
 use prometheus::Registry;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use async_trait::async_trait;
+use futures::future::try_join_all;
 use mysten_metrics::spawn_monitored_task;
 use sui_data_ingestion_core::{
-    DataIngestionMetrics, IndexerExecutor, ReaderOptions, ShimProgressStore, WorkerPool,
+    DataIngestionMetrics, IndexerExecutor, ProgressStore, ReaderOptions, WorkerPool,
 };
+use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 
 use crate::build_json_rpc_server;
+use crate::config::{IngestionConfig, JsonRpcConfig, PruningOptions, SnapshotLagConfig};
+use crate::database::ConnectionPool;
 use crate::errors::IndexerError;
 use crate::handlers::checkpoint_handler::new_handlers;
-use crate::handlers::objects_snapshot_processor::{ObjectsSnapshotProcessor, SnapshotLagConfig};
+use crate::handlers::objects_snapshot_processor::start_objects_snapshot_processor;
+use crate::handlers::pruner::Pruner;
 use crate::indexer_reader::IndexerReader;
 use crate::metrics::IndexerMetrics;
-use crate::store::IndexerStore;
-use crate::IndexerConfig;
-
-const DOWNLOAD_QUEUE_SIZE: usize = 200;
-const INGESTION_READER_TIMEOUT_SECS: u64 = 20;
-// Limit indexing parallelism on big checkpoints to avoid OOM,
-// by limiting the total size of batch checkpoints to ~20MB.
-// On testnet, most checkpoints are < 200KB, some can go up to 50MB.
-const CHECKPOINT_PROCESSING_BATCH_DATA_LIMIT: usize = 20000000;
+use crate::store::{IndexerStore, PgIndexerStore};
 
 pub struct Indexer;
 
 impl Indexer {
-    pub async fn start_writer<
-        S: IndexerStore + Sync + Send + Clone + 'static,
-        T: R2D2Connection + 'static,
-    >(
-        config: &IndexerConfig,
-        store: S,
+    #[cfg(test)]
+    pub async fn start_writer_for_testing(
+        config: &IngestionConfig,
+        store: PgIndexerStore,
         metrics: IndexerMetrics,
     ) -> Result<(), IndexerError> {
         let snapshot_config = SnapshotLagConfig::default();
-        Indexer::start_writer_with_config::<S, T>(
+        Indexer::start_writer_with_config(
             config,
             store,
             metrics,
             snapshot_config,
+            PruningOptions::default(),
             CancellationToken::new(),
         )
         .await
     }
 
-    pub async fn start_writer_with_config<
-        S: IndexerStore + Sync + Send + Clone + 'static,
-        T: R2D2Connection + 'static,
-    >(
-        config: &IndexerConfig,
-        store: S,
+    pub async fn start_writer_with_config(
+        config: &IngestionConfig,
+        store: PgIndexerStore,
         metrics: IndexerMetrics,
         snapshot_config: SnapshotLagConfig,
+        pruning_options: PruningOptions,
         cancel: CancellationToken,
     ) -> Result<(), IndexerError> {
         info!(
@@ -68,92 +63,164 @@ impl Indexer {
             env!("CARGO_PKG_VERSION")
         );
 
-        let watermark = store
+        info!("Sui Indexer Writer config: {config:?}",);
+
+        let primary_watermark = store
             .get_latest_checkpoint_sequence_number()
             .await
             .expect("Failed to get latest tx checkpoint sequence number from DB")
             .map(|seq| seq + 1)
             .unwrap_or_default();
-        let download_queue_size = env::var("DOWNLOAD_QUEUE_SIZE")
-            .unwrap_or_else(|_| DOWNLOAD_QUEUE_SIZE.to_string())
-            .parse::<usize>()
-            .expect("Invalid DOWNLOAD_QUEUE_SIZE");
-        let ingestion_reader_timeout_secs = env::var("INGESTION_READER_TIMEOUT_SECS")
-            .unwrap_or_else(|_| INGESTION_READER_TIMEOUT_SECS.to_string())
-            .parse::<u64>()
-            .expect("Invalid INGESTION_READER_TIMEOUT_SECS");
-        let data_limit = std::env::var("CHECKPOINT_PROCESSING_BATCH_DATA_LIMIT")
-            .unwrap_or(CHECKPOINT_PROCESSING_BATCH_DATA_LIMIT.to_string())
-            .parse::<usize>()
-            .unwrap();
 
-        let rest_client = sui_rest_api::Client::new(format!("{}/rest", config.rpc_client_url));
+        let extra_reader_options = ReaderOptions {
+            batch_size: config.checkpoint_download_queue_size,
+            timeout_secs: config.checkpoint_download_timeout,
+            data_limit: config.checkpoint_download_queue_size_bytes,
+            ..Default::default()
+        };
 
-        let objects_snapshot_processor = ObjectsSnapshotProcessor::new_with_config(
-            rest_client.clone(),
+        // Start objects snapshot processor, which is a separate pipeline with its ingestion pipeline.
+        let (object_snapshot_worker, object_snapshot_watermark) = start_objects_snapshot_processor(
             store.clone(),
             metrics.clone(),
             snapshot_config,
             cancel.clone(),
-        );
-        spawn_monitored_task!(objects_snapshot_processor.start());
+        )
+        .await?;
 
-        let cancel_clone = cancel.clone();
-        let (exit_sender, exit_receiver) = oneshot::channel();
-        // Spawn a task that links the cancellation token to the exit sender
-        spawn_monitored_task!(async move {
-            cancel_clone.cancelled().await;
-            let _ = exit_sender.send(());
-        });
+        if let Some(epochs_to_keep) = pruning_options.epochs_to_keep {
+            info!(
+                "Starting indexer pruner with epochs to keep: {}",
+                epochs_to_keep
+            );
+            assert!(epochs_to_keep > 0, "Epochs to keep must be positive");
+            let pruner = Pruner::new(store.clone(), epochs_to_keep, metrics.clone())?;
+            spawn_monitored_task!(pruner.start(CancellationToken::new()));
+        }
 
+        // If we already have chain identifier indexed (i.e. the first checkpoint has been indexed),
+        // then we persist protocol configs for protocol versions not yet in the db.
+        // Otherwise, we would do the persisting in `commit_checkpoint` while the first cp is
+        // being indexed.
+        if let Some(chain_id) = IndexerStore::get_chain_identifier(&store).await? {
+            store
+                .persist_protocol_configs_and_feature_flags(chain_id)
+                .await?;
+        }
+
+        let mut exit_senders = vec![];
+        let mut executors = vec![];
+        let progress_store = ShimIndexerProgressStore::new(vec![
+            ("primary".to_string(), primary_watermark),
+            ("object_snapshot".to_string(), object_snapshot_watermark),
+        ]);
         let mut executor = IndexerExecutor::new(
-            ShimProgressStore(watermark),
-            1,
+            progress_store.clone(),
+            2,
             DataIngestionMetrics::new(&Registry::new()),
         );
-        let worker =
-            new_handlers::<S, T>(store, rest_client, metrics, watermark, cancel.clone()).await?;
-        let worker_pool = WorkerPool::new(worker, "workflow".to_string(), download_queue_size);
-        let extra_reader_options = ReaderOptions {
-            batch_size: download_queue_size,
-            timeout_secs: ingestion_reader_timeout_secs,
-            data_limit,
-            ..Default::default()
-        };
+        let worker = new_handlers(store, metrics, primary_watermark, cancel.clone()).await?;
+        let worker_pool = WorkerPool::new(
+            worker,
+            "primary".to_string(),
+            config.checkpoint_download_queue_size,
+        );
         executor.register(worker_pool).await?;
+        let (exit_sender, exit_receiver) = oneshot::channel();
+        executors.push((executor, exit_receiver));
+        exit_senders.push(exit_sender);
+
+        // in a non-colocated setup, start a separate indexer for processing object snapshots
+        if config.sources.data_ingestion_path.is_none() {
+            let executor = IndexerExecutor::new(
+                progress_store,
+                1,
+                DataIngestionMetrics::new(&Registry::new()),
+            );
+            let (exit_sender, exit_receiver) = oneshot::channel();
+            exit_senders.push(exit_sender);
+            executors.push((executor, exit_receiver));
+        }
+
+        let worker_pool = WorkerPool::new(
+            object_snapshot_worker,
+            "object_snapshot".to_string(),
+            config.checkpoint_download_queue_size,
+        );
+        let executor = executors.last_mut().expect("executors is not empty");
+        executor.0.register(worker_pool).await?;
+
+        // Spawn a task that links the cancellation token to the exit sender
+        spawn_monitored_task!(async move {
+            cancel.cancelled().await;
+            for exit_sender in exit_senders {
+                let _ = exit_sender.send(());
+            }
+        });
+
         info!("Starting data ingestion executor...");
-        executor
-            .run(
+        let futures = executors.into_iter().map(|(executor, exit_receiver)| {
+            executor.run(
                 config
+                    .sources
                     .data_ingestion_path
                     .clone()
                     .unwrap_or(tempfile::tempdir().unwrap().into_path()),
-                config.remote_store_url.clone(),
+                config
+                    .sources
+                    .remote_store_url
+                    .as_ref()
+                    .map(|url| url.as_str().to_owned()),
                 vec![],
-                extra_reader_options,
+                extra_reader_options.clone(),
                 exit_receiver,
             )
-            .await?;
+        });
+        try_join_all(futures).await?;
         Ok(())
     }
 
-    pub async fn start_reader<T: R2D2Connection + 'static>(
-        config: &IndexerConfig,
+    pub async fn start_reader(
+        config: &JsonRpcConfig,
         registry: &Registry,
-        db_url: String,
+        pool: ConnectionPool,
     ) -> Result<(), IndexerError> {
         info!(
             "Sui Indexer Reader (version {:?}) started...",
             env!("CARGO_PKG_VERSION")
         );
-        let indexer_reader = IndexerReader::<T>::new(db_url)?;
-        let handle = build_json_rpc_server(registry, indexer_reader, config, None)
+        let indexer_reader = IndexerReader::new(pool);
+        let handle = build_json_rpc_server(registry, indexer_reader, config)
             .await
             .expect("Json rpc server should not run into errors upon start.");
         tokio::spawn(async move { handle.stopped().await })
             .await
             .expect("Rpc server task failed");
 
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ShimIndexerProgressStore {
+    watermarks: HashMap<String, CheckpointSequenceNumber>,
+}
+
+impl ShimIndexerProgressStore {
+    fn new(watermarks: Vec<(String, CheckpointSequenceNumber)>) -> Self {
+        Self {
+            watermarks: watermarks.into_iter().collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl ProgressStore for ShimIndexerProgressStore {
+    async fn load(&mut self, task_name: String) -> Result<CheckpointSequenceNumber> {
+        Ok(*self.watermarks.get(&task_name).expect("missing watermark"))
+    }
+
+    async fn save(&mut self, _: String, _: CheckpointSequenceNumber) -> Result<()> {
         Ok(())
     }
 }

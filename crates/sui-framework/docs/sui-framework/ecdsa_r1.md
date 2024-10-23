@@ -23,7 +23,7 @@ title: Module `0x2::ecdsa_r1`
 Error if the public key cannot be recovered from the signature.
 
 
-<pre><code><b>const</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_EFailToRecoverPubKey">EFailToRecoverPubKey</a>: u64 = 0;
+<pre><code><b>const</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_EFailToRecoverPubKey">EFailToRecoverPubKey</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 0;
 </code></pre>
 
 
@@ -33,7 +33,7 @@ Error if the public key cannot be recovered from the signature.
 Error if the signature is invalid.
 
 
-<pre><code><b>const</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_EInvalidSignature">EInvalidSignature</a>: u64 = 1;
+<pre><code><b>const</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_EInvalidSignature">EInvalidSignature</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 1;
 </code></pre>
 
 
@@ -82,7 +82,11 @@ applied to Secp256r1 signatures. May fail with <code><a href="ecdsa_r1.md#0x2_ec
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>native</b> <b>fun</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_secp256r1_ecrecover">secp256r1_ecrecover</a>(signature: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, msg: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, <a href="hash.md#0x2_hash">hash</a>: u8): <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;;
+<pre><code><b>public</b> <b>native</b> <b>fun</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_secp256r1_ecrecover">secp256r1_ecrecover</a>(
+    signature: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    msg: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    <a href="hash.md#0x2_hash">hash</a>: u8,
+): <a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;;
 </code></pre>
 
 
@@ -113,7 +117,12 @@ If the signature is valid to the pubkey and hashed message, return true. Else fa
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>native</b> <b>fun</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_secp256r1_verify">secp256r1_verify</a>(signature: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, public_key: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, msg: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;, <a href="hash.md#0x2_hash">hash</a>: u8): bool;
+<pre><code><b>public</b> <b>native</b> <b>fun</b> <a href="ecdsa_r1.md#0x2_ecdsa_r1_secp256r1_verify">secp256r1_verify</a>(
+    signature: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    public_key: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    msg: &<a href="../move-stdlib/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    <a href="hash.md#0x2_hash">hash</a>: u8,
+): bool;
 </code></pre>
 
 

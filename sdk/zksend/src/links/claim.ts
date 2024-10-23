@@ -14,13 +14,13 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import type { TransactionObjectArgument } from '@mysten/sui/transactions';
 import { Transaction } from '@mysten/sui/transactions';
 import {
-	fromB64,
+	fromBase64,
 	normalizeStructTag,
 	normalizeSuiAddress,
 	normalizeSuiObjectId,
 	parseStructTag,
 	SUI_TYPE_ARG,
-	toB64,
+	toBase64,
 } from '@mysten/sui/utils';
 
 import type { ZkSendLinkBuilderOptions } from './builder.js';
@@ -28,7 +28,7 @@ import { ZkSendLinkBuilder } from './builder.js';
 import type { LinkAssets } from './utils.js';
 import { getAssetsFromTransaction, isOwner, ownedAfterChange } from './utils.js';
 import type { ZkBagContractOptions } from './zk-bag.js';
-import { MAINNET_CONTRACT_IDS, ZkBag } from './zk-bag.js';
+import { getContractIds, ZkBag } from './zk-bag.js';
 
 const DEFAULT_ZK_SEND_LINK_OPTIONS = {
 	host: 'https://zksend.com',
@@ -89,7 +89,7 @@ export class ZkSendLink {
 		network = DEFAULT_ZK_SEND_LINK_OPTIONS.network,
 		client = new SuiClient({ url: getFullnodeUrl(network) }),
 		keypair,
-		contract = network === 'mainnet' ? MAINNET_CONTRACT_IDS : null,
+		contract = getContractIds(network),
 		address,
 		host = DEFAULT_ZK_SEND_LINK_OPTIONS.host,
 		path = DEFAULT_ZK_SEND_LINK_OPTIONS.path,
@@ -126,22 +126,24 @@ export class ZkSendLink {
 
 		let link: ZkSendLink;
 		if (isContractLink) {
-			const keypair = Ed25519Keypair.fromSecretKey(fromB64(parsed.hash.slice(2)));
+			const keypair = Ed25519Keypair.fromSecretKey(fromBase64(parsed.hash.slice(2)));
 			link = new ZkSendLink({
 				...options,
 				keypair,
+				network: parsed.searchParams.get('network') === 'testnet' ? 'testnet' : 'mainnet',
 				host: `${parsed.protocol}//${parsed.host}`,
 				path: parsed.pathname,
 				isContractLink: true,
 			});
 		} else {
 			const keypair = Ed25519Keypair.fromSecretKey(
-				fromB64(isContractLink ? parsed.hash.slice(2) : parsed.hash.slice(1)),
+				fromBase64(isContractLink ? parsed.hash.slice(2) : parsed.hash.slice(1)),
 			);
 
 			link = new ZkSendLink({
 				...options,
 				keypair,
+				network: parsed.searchParams.get('network') === 'testnet' ? 'testnet' : 'mainnet',
 				host: `${parsed.protocol}//${parsed.host}`,
 				path: parsed.pathname,
 				isContractLink: false,
@@ -231,14 +233,25 @@ export class ZkSendLink {
 			reclaim ? address : this.keypair!.toSuiAddress(),
 		);
 
-		const bytes = fromB64(sponsored.bytes);
+		const bytes = fromBase64(sponsored.bytes);
 		const signature = sign
 			? await sign(bytes)
 			: (await this.keypair!.signTransaction(bytes)).signature;
 
 		const { digest } = await this.#executeSponsoredTransaction(sponsored, signature);
 
-		return this.#client.waitForTransaction({ digest });
+		const result = await this.#client.waitForTransaction({
+			digest,
+			options: { showEffects: true },
+		});
+
+		if (result.effects?.status.status !== 'success') {
+			throw new Error(
+				`Claim transaction failed: ${result.effects?.status.error ?? 'Unknown error'}`,
+			);
+		}
+
+		return result;
 	}
 
 	createClaimTransaction(
@@ -262,10 +275,11 @@ export class ZkSendLink {
 		tx.setSender(sender);
 
 		const store = tx.object(this.#contract.ids.bagStoreId);
+		const command = reclaim
+			? this.#contract.reclaim({ arguments: [store, this.address] })
+			: this.#contract.init_claim({ arguments: [store] });
 
-		const [bag, proof] = reclaim
-			? this.#contract.reclaim(tx, { arguments: [store, this.address] })
-			: this.#contract.init_claim(tx, { arguments: [store] });
+		const [bag, proof] = tx.add(command);
 
 		const objectsToTransfer: TransactionObjectArgument[] = [];
 
@@ -273,7 +287,7 @@ export class ZkSendLink {
 
 		for (const object of objects) {
 			objectsToTransfer.push(
-				this.#contract.claim(tx, {
+				this.#contract.claim({
 					arguments: [
 						bag,
 						proof,
@@ -288,10 +302,11 @@ export class ZkSendLink {
 			);
 		}
 
-		this.#contract.finalize(tx, { arguments: [bag, proof] });
 		if (objectsToTransfer.length > 0) {
 			tx.transferObjects(objectsToTransfer, address);
 		}
+
+		tx.add(this.#contract.finalize({ arguments: [bag, proof] }));
 
 		return tx;
 	}
@@ -331,7 +346,7 @@ export class ZkSendLink {
 
 		const to = tx.pure.address(newLinkKp.toSuiAddress());
 
-		this.#contract.update_receiver(tx, { arguments: [store, this.address, to] });
+		tx.add(this.#contract.update_receiver({ arguments: [store, this.address, to] }));
 
 		return {
 			url: newLink.getLink(),
@@ -531,7 +546,7 @@ export class ZkSendLink {
 				network: this.#network,
 				sender,
 				claimer,
-				transactionBlockKindBytes: toB64(
+				transactionBlockKindBytes: toBase64(
 					await tx.build({
 						onlyTransactionKind: true,
 						client: this.#client,

@@ -18,12 +18,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -44,9 +45,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -93,35 +94,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -136,8 +161,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: avYcyVgYMXTyaUYh9IRwLK0gSzl7YF6ZQDAbrS1Bhvo=
     worker-key-pair:
@@ -153,12 +188,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -179,9 +215,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -228,35 +264,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -271,8 +331,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: OXnx3yM1C/ppgnDMx/o1d49fJs7E05kq11mXNae/O+I=
     worker-key-pair:
@@ -288,12 +358,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -314,9 +385,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -363,35 +434,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -406,8 +501,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: CyNkjqNVr3HrHTH7f/NLs7u5lUHJzuPAw0PqMTD2y2s=
     worker-key-pair:
@@ -423,12 +528,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -449,9 +555,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -498,35 +604,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -541,8 +671,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: X/I/kM+KvHcxAKEf2UU6Sr7SpN3bhiE9nP5CuM/iIY0=
     worker-key-pair:
@@ -558,12 +698,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -584,9 +725,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -633,35 +774,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -676,8 +841,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: N272EiFDyKtxRbDKbyN6ujenJ+skPcRoc/XolpOLGnU=
     worker-key-pair:
@@ -693,12 +868,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -719,9 +895,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -768,35 +944,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -811,8 +1011,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
   - protocol-key-pair:
       value: a74f03IOjL8ZFSWFChFVEi+wiMwHNwNCPDGIYkGfgjs=
     worker-key-pair:
@@ -828,12 +1038,13 @@ validator_configs:
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
-      address: ""
       db-path: /tmp/foo/
-      internal-worker-address: ""
+      db-retention-epochs: ~
+      db-pruner-period-secs: ~
       max-pending-transactions: ~
       max-submit-position: ~
       submit-delay-step-override-millis: ~
+      address: ""
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
@@ -854,9 +1065,9 @@ validator_configs:
           send_certificate_rate_limit: ~
           report_batch_rate_limit: ~
           request_batches_rate_limit: ~
-    enable-event-processing: false
+      parameters: ~
     enable-index-processing: true
-    websocket-only: false
+    jsonrpc-server-type: ~
     grpc-load-shed: ~
     grpc-concurrency-limit: 20000000000
     p2p-config:
@@ -903,35 +1114,59 @@ validator_configs:
       concurrency: 0
     indexer-max-subscriptions: ~
     transaction-kv-store-read-config:
-      base-url: ""
+      base-url: "https://transactions.sui.io/"
+      cache-size: 100000
     jwk-fetch-interval-seconds: 3600
     zklogin-oauth-providers:
       Mainnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Testnet:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
+        - Credenza3
         - Facebook
         - Google
+        - KarrierOne
+        - Onefc
+        - Playtron
+        - Threedos
         - Twitch
       Unknown:
         - Apple
+        - Arden
+        - "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es"
         - "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A"
+        - "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8"
         - Credenza3
         - Facebook
+        - FanTV
         - Google
         - Kakao
         - KarrierOne
         - Microsoft
+        - Onefc
+        - Playtron
         - Slack
         - TestIssuer
+        - Threedos
         - Twitch
     authority-overload-config:
       max-txn-age-in-queue:
-        secs: 1
-        nanos: 0
+        secs: 0
+        nanos: 200000000
       overload-monitor-interval:
         secs: 10
         nanos: 0
@@ -946,8 +1181,18 @@ validator_configs:
       safe-transaction-ready-rate: 100
       check-system-overload-at-signing: true
       max-transaction-manager-queue-length: 100000
-      max-transaction-manager-per-object-queue-length: 100
-    execution-cache: passthrough-cache
+      max-transaction-manager-per-object-queue-length: 20
+    execution-cache:
+      writeback-cache:
+        max_cache_size: ~
+    enable-soft-bundle: true
+    enable-validator-tx-finalizer: true
+    verifier-signing-config:
+      max-per-fun-meter-units: ~
+      max-per-mod-meter-units: ~
+      max-per-pkg-meter-units: ~
+      max-back-edges-per-function: ~
+      max-back-edges-per-module: ~
 account_keys:
   - Hloy4pnf8pWEHGP+4OFsXz56bLdIJhkD2O+OdKMqCA4=
   - pvMScjoMR/DaN0M5IOxS2VpGC59N6kv6gDm63ufLQ5w=
@@ -955,4 +1200,3 @@ account_keys:
   - mfPjCoE6SX0Sl84MnmNS/LS+tfPpkn7I8tziuk2g0WM=
   - 5RWlYF22jS9i76zLl8jP2D3D8GC5ht+IP1dWUBGZxi8=
 genesis: "[fake genesis]"
-

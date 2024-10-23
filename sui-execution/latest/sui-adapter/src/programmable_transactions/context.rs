@@ -14,15 +14,21 @@ mod checked {
 
     use crate::adapter::new_native_extensions;
     use crate::error::convert_vm_error;
+    use crate::execution_mode::ExecutionMode;
+    use crate::execution_value::{CommandKind, ObjectContents, TryFromValue, Value};
+    use crate::execution_value::{
+        ExecutionState, InputObjectMetadata, InputValue, ObjectValue, RawValueType, ResultValue,
+        UsageKind,
+    };
     use crate::gas_charger::GasCharger;
     use crate::programmable_transactions::linkage_view::LinkageView;
+    use crate::type_resolver::TypeTagResolver;
     use move_binary_format::{
         errors::{Location, PartialVMError, PartialVMResult, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
         CompiledModule,
         call_trace::CallTraces,
     };
-    use move_core_types::gas_algebra::NumBytes;
     use move_core_types::resolver::ModuleResolver;
     use move_core_types::vm_status::StatusCode;
     use move_core_types::{
@@ -37,36 +43,26 @@ mod checked {
     };
     use move_vm_types::data_store::DataStore;
     use move_vm_types::loaded_data::runtime_types::Type;
-    use move_vm_types::values::GlobalValue;
     use sui_move_natives::object_runtime::{
         self, get_all_uids, max_event_error, LoadedRuntimeObject, ObjectRuntime, RuntimeResults,
     };
     use sui_protocol_config::ProtocolConfig;
     use sui_types::execution::ExecutionResults;
-    use sui_types::storage::PackageObject;
+    use sui_types::storage::{DenyListResult, PackageObject};
     use sui_types::{
         balance::Balance,
         base_types::{MoveObjectType, ObjectID, SuiAddress, TxContext},
         coin::Coin,
         error::{ExecutionError, ExecutionErrorKind},
         event::Event,
-        execution::{
-            ExecutionResultsV2, ExecutionState, InputObjectMetadata, InputValue, ObjectValue,
-            RawValueType, ResultValue, UsageKind,
-        },
+        execution::ExecutionResultsV2,
         metrics::LimitsMetrics,
         move_package::MovePackage,
         object::{Data, MoveObject, Object, ObjectInner, Owner},
         storage::BackingPackageStore,
         transaction::{Argument, CallArg, ObjectArg},
-        type_resolver::TypeTagResolver,
     };
-    use sui_types::{
-        error::command_argument_error,
-        execution::{CommandKind, ObjectContents, TryFromValue, Value},
-        execution_mode::ExecutionMode,
-        execution_status::CommandArgumentError,
-    };
+    use sui_types::{error::command_argument_error, execution_status::CommandArgumentError};
     use tracing::instrument;
 
     /// Maintains all runtime state specific to programmable transactions
@@ -611,6 +607,7 @@ mod checked {
                 inputs,
                 results,
                 user_events,
+                state_view,
                 ..
             } = self;
             let tx_digest = tx_context.digest();
@@ -829,6 +826,15 @@ mod checked {
                         ));
                     }
                 }
+            }
+
+            if protocol_config.enable_coin_deny_list_v2() {
+                let DenyListResult {
+                    result,
+                    num_non_gas_coin_owners,
+                } = state_view.check_coin_deny_list(&written_objects);
+                gas_charger.charge_coin_transfers(protocol_config, num_non_gas_coin_owners)?;
+                result?;
             }
 
             let user_events = user_events
@@ -1553,19 +1559,6 @@ mod checked {
                     )
                 }
             }
-        }
-
-        //
-        // TODO: later we will clean up the interface with the runtime and the functions below
-        //       will likely be exposed via extensions
-        //
-
-        fn load_resource(
-            &mut self,
-            _addr: AccountAddress,
-            _ty: &Type,
-        ) -> PartialVMResult<(&mut GlobalValue, Option<Option<NumBytes>>)> {
-            panic!("load_resource should never be called for LinkageView")
         }
 
         fn publish_module(&mut self, _module_id: &ModuleId, _blob: Vec<u8>) -> VMResult<()> {

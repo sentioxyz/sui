@@ -49,11 +49,7 @@ use crate::transaction_outputs::TransactionOutputs;
 
 use dashmap::mapref::entry::Entry as DashMapEntry;
 use dashmap::DashMap;
-use either::Either;
-use futures::{
-    future::{join_all, BoxFuture},
-    FutureExt,
-};
+use futures::{future::BoxFuture, FutureExt};
 use moka::sync::Cache as MokaCache;
 use mysten_common::sync::notify_read::NotifyRead;
 use parking_lot::Mutex;
@@ -77,6 +73,7 @@ use sui_types::object::Object;
 use sui_types::storage::{MarkerValue, ObjectKey, ObjectOrTombstone, ObjectStore, PackageObject};
 use sui_types::sui_system_state::{get_sui_system_state, SuiSystemState};
 use sui_types::transaction::{VerifiedSignedTransaction, VerifiedTransaction};
+use tap::TapOptional;
 use tracing::{debug, info, instrument, trace, warn};
 
 use super::ExecutionCacheAPI;
@@ -97,12 +94,19 @@ enum ObjectEntry {
     Wrapped,
 }
 
-#[cfg(test)]
 impl ObjectEntry {
+    #[cfg(test)]
     fn unwrap_object(&self) -> &Object {
         match self {
             ObjectEntry::Object(o) => o,
             _ => panic!("unwrap_object called on non-Object"),
+        }
+    }
+
+    fn is_tombstone(&self) -> bool {
+        match self {
+            ObjectEntry::Deleted | ObjectEntry::Wrapped => true,
+            ObjectEntry::Object(_) => false,
         }
     }
 }
@@ -456,7 +460,7 @@ impl WritebackCache {
         version: SequenceNumber,
         object: ObjectEntry,
     ) {
-        debug!("inserting object entry {:?}", object);
+        debug!(?object_id, ?version, ?object, "inserting object entry");
         fail_point_async!("write_object_entry");
         self.metrics.record_cache_write("object");
         self.dirty
@@ -589,15 +593,28 @@ impl WritebackCache {
                         obj
                     });
 
-                assert_eq!(
-                    highest,
-                    match &*entry.lock() {
-                        LatestObjectCacheEntry::Object(_, entry) => Some(entry.clone()),
-                        LatestObjectCacheEntry::NonExistent => None,
-                    },
-                    "object_by_id cache is incoherent for {:?}",
-                    object_id
-                );
+                let cache_entry = match &*entry.lock() {
+                    LatestObjectCacheEntry::Object(_, entry) => Some(entry.clone()),
+                    LatestObjectCacheEntry::NonExistent => None,
+                };
+
+                // If the cache entry is a tombstone, the db entry may be missing if it was pruned.
+                let tombstone_possibly_pruned = highest.is_none()
+                    && cache_entry
+                        .as_ref()
+                        .map(|e| e.is_tombstone())
+                        .unwrap_or(false);
+
+                if highest != cache_entry && !tombstone_possibly_pruned {
+                    tracing::error!(
+                        ?highest,
+                        ?cache_entry,
+                        ?tombstone_possibly_pruned,
+                        "object_by_id cache is incoherent for {:?}",
+                        object_id
+                    );
+                    panic!("object_by_id cache is incoherent for {:?}", object_id);
+                }
             }
         }
 
@@ -788,6 +805,11 @@ impl WritebackCache {
         let tx_digest = *transaction.digest();
         let effects_digest = effects.digest();
 
+        self.metrics.record_cache_write("transaction_block");
+        self.dirty
+            .pending_transaction_writes
+            .insert(tx_digest, tx_outputs.clone());
+
         // insert transaction effects before executed_effects_digests so that there
         // are never dangling entries in executed_effects_digests
         self.metrics.record_cache_write("transaction_effects");
@@ -815,11 +837,6 @@ impl WritebackCache {
             .executed_effects_digests
             .insert(tx_digest, effects_digest);
 
-        self.metrics.record_cache_write("transaction_block");
-        self.dirty
-            .pending_transaction_writes
-            .insert(tx_digest, tx_outputs);
-
         self.executed_effects_digests_notify_read
             .notify(&tx_digest, &effects_digest);
 
@@ -831,13 +848,14 @@ impl WritebackCache {
     }
 
     // Commits dirty data for the given TransactionDigest to the db.
-    #[instrument(level = "debug", skip(self))]
+    #[instrument(level = "debug", skip_all)]
     async fn commit_transaction_outputs(
         &self,
         epoch: EpochId,
         digests: &[TransactionDigest],
     ) -> SuiResult {
         fail_point_async!("writeback-cache-commit");
+        trace!(?digests);
 
         let mut all_outputs = Vec::with_capacity(digests.len());
         for tx in digests {
@@ -1128,10 +1146,32 @@ impl WritebackCache {
                 self.packages.invalidate(object_id);
             }
             self.cached.object_by_id_cache.invalidate(object_id);
+            self.cached.object_cache.invalidate(object_id);
+        }
+
+        for ObjectKey(object_id, _) in outputs.deleted.iter().chain(outputs.wrapped.iter()) {
+            self.cached.object_by_id_cache.invalidate(object_id);
+            self.cached.object_cache.invalidate(object_id);
         }
 
         // Note: individual object entries are removed when clear_state_end_of_epoch_impl is called
         Ok(())
+    }
+
+    fn bulk_insert_genesis_objects_impl(&self, objects: &[Object]) -> SuiResult {
+        self.store.bulk_insert_genesis_objects(objects)?;
+        for obj in objects {
+            dbg!("invalidagted!", obj.id());
+            self.cached.object_cache.invalidate(&obj.id());
+            self.cached.object_by_id_cache.invalidate(&obj.id());
+        }
+        Ok(())
+    }
+
+    fn insert_genesis_object_impl(&self, object: Object) -> SuiResult {
+        self.cached.object_by_id_cache.invalidate(&object.id());
+        self.cached.object_cache.invalidate(&object.id());
+        self.store.insert_genesis_object(object)
     }
 
     pub fn clear_caches_and_assert_empty(&self) {
@@ -1335,6 +1375,7 @@ impl ObjectCacheRead for WritebackCache {
         }
     }
 
+    #[instrument(level = "trace", skip_all, fields(object_id, version_bound))]
     fn find_object_lt_or_eq_version(
         &self,
         object_id: ObjectID,
@@ -1359,6 +1400,9 @@ impl ObjectCacheRead for WritebackCache {
                                 .record_cache_negative_hit("object_lt_or_eq_version", $level);
                             return Ok(None);
                         }
+                    } else {
+                        self.metrics
+                            .record_cache_miss("object_lt_or_eq_version", $level);
                     }
                 }
             };
@@ -1428,7 +1472,10 @@ impl ObjectCacheRead for WritebackCache {
                 // exists only to ensure correctness in all the edge cases.
                 let latest: Option<(SequenceNumber, ObjectEntry)> =
                     if let Some(dirty_set) = dirty_entry {
-                        dirty_set.get_highest().cloned()
+                        dirty_set
+                            .get_highest()
+                            .cloned()
+                            .tap_none(|| panic!("dirty set cannot be empty"))
                     } else {
                         self.record_db_get("object_lt_or_eq_version_latest")
                             .get_latest_object_or_tombstone(object_id)?
@@ -1460,7 +1507,12 @@ impl ObjectCacheRead for WritebackCache {
                     }
                 } else {
                     // no object found in dirty set or db, object does not exist
-                    assert!(cached_entry.is_none());
+                    // When this is called from a read api (i.e. not the execution path) it is
+                    // possible that the object has been deleted and pruned. In this case,
+                    // there would be no entry at all on disk, but we may have a tombstone in the
+                    // cache
+                    let highest = cached_entry.and_then(|c| c.get_highest());
+                    assert!(highest.is_none() || highest.unwrap().1.is_tombstone());
                     self.cache_object_not_found(&object_id);
                     Ok(None)
                 }
@@ -1586,6 +1638,10 @@ impl ObjectCacheRead for WritebackCache {
         )?;
         Ok(())
     }
+
+    fn get_highest_pruned_checkpoint(&self) -> SuiResult<CheckpointSequenceNumber> {
+        self.store.perpetual_tables.get_highest_pruned_checkpoint()
+    }
 }
 
 impl TransactionCacheRead for WritebackCache {
@@ -1702,25 +1758,11 @@ impl TransactionCacheRead for WritebackCache {
         &'a self,
         digests: &'a [TransactionDigest],
     ) -> BoxFuture<'a, SuiResult<Vec<TransactionEffectsDigest>>> {
-        async move {
-            let registrations = self
-                .executed_effects_digests_notify_read
-                .register_all(digests);
-
-            let executed_effects_digests = self.multi_get_executed_effects_digests(digests)?;
-
-            let results = executed_effects_digests
-                .into_iter()
-                .zip(registrations)
-                .map(|(a, r)| match a {
-                    // Note that Some() clause also drops registration that is already fulfilled
-                    Some(ready) => Either::Left(futures::future::ready(ready)),
-                    None => Either::Right(r),
-                });
-
-            Ok(join_all(results).await)
-        }
-        .boxed()
+        self.executed_effects_digests_notify_read
+            .read(digests, |digests| {
+                self.multi_get_executed_effects_digests(digests)
+            })
+            .boxed()
     }
 
     fn multi_get_events(

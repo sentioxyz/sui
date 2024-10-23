@@ -3,6 +3,7 @@
 
 use consensus_config::{AuthorityIndex, Epoch, Stake};
 use fastcrypto::error::FastCryptoError;
+use strum_macros::IntoStaticStr;
 use thiserror::Error;
 use typed_store::TypedStoreError;
 
@@ -12,8 +13,8 @@ use crate::{
 };
 
 /// Errors that can occur when processing blocks, reading from storage, or encountering shutdown.
-#[derive(Clone, Debug, Error)]
-pub enum ConsensusError {
+#[derive(Clone, Debug, Error, IntoStaticStr)]
+pub(crate) enum ConsensusError {
     #[error("Error deserializing block: {0}")]
     MalformedBlock(bcs::Error),
 
@@ -22,6 +23,15 @@ pub enum ConsensusError {
 
     #[error("Error serializing: {0}")]
     SerializationFailure(bcs::Error),
+
+    #[error("Block contains a transaction that is too large: {size} > {limit}")]
+    TransactionTooLarge { size: usize, limit: usize },
+
+    #[error("Block contains too many transactions: {count} > {limit}")]
+    TooManyTransactions { count: usize, limit: usize },
+
+    #[error("Block contains too many transaction bytes: {size} > {limit}")]
+    TooManyTransactionBytes { size: usize, limit: usize },
 
     #[error("Unexpected block authority {0} from peer {1}")]
     UnexpectedAuthority(AuthorityIndex, AuthorityIndex),
@@ -50,11 +60,22 @@ pub enum ConsensusError {
         block_ref: BlockRef,
     },
 
+    #[error(
+        "Unexpected block {block_ref} returned while fetching last own block from peer {index}"
+    )]
+    UnexpectedLastOwnBlock {
+        index: AuthorityIndex,
+        block_ref: BlockRef,
+    },
+
     #[error("Too many blocks have been returned from authority {0} when requesting to fetch missing blocks")]
     TooManyFetchedBlocksReturned(AuthorityIndex),
 
     #[error("Too many blocks have been requested from authority {0}")]
     TooManyFetchBlocksRequested(AuthorityIndex),
+
+    #[error("Too many authorities have been provided from authority {0}")]
+    TooManyAuthoritiesProvided(AuthorityIndex),
 
     #[error("Provided size of highest accepted rounds parameter, {0}, is different than committee size, {1}")]
     InvalidSizeOfHighestAcceptedRounds(usize, usize),
@@ -104,9 +125,6 @@ pub enum ConsensusError {
         max_timestamp_ms: u64,
         block_timestamp_ms: u64,
     },
-
-    #[error("No available authority to fetch commits")]
-    NoAvailableAuthorityToFetchCommits,
 
     #[error("Received no commit from peer {peer}")]
     NoCommitReceived { peer: AuthorityIndex },
@@ -171,6 +189,13 @@ pub enum ConsensusError {
     Shutdown,
 }
 
+impl ConsensusError {
+    /// Returns the error name - only the enun name without any parameters - as a static string.
+    pub fn name(&self) -> &'static str {
+        self.into()
+    }
+}
+
 pub type ConsensusResult<T> = Result<T, ConsensusError>;
 
 #[macro_export]
@@ -187,4 +212,40 @@ macro_rules! ensure {
             bail!($e);
         }
     };
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// This test ensures that consensus errors when converted to a static string are the same as the enum name without
+    /// any parameterers included to the result string.
+    #[test]
+    fn test_error_name() {
+        {
+            let error = ConsensusError::InvalidAncestorRound {
+                ancestor: 10,
+                block: 11,
+            };
+            let error: &'static str = error.into();
+
+            assert_eq!(error, "InvalidAncestorRound");
+        }
+
+        {
+            let error = ConsensusError::InvalidAuthorityIndex {
+                index: AuthorityIndex::new_for_test(3),
+                max: 10,
+            };
+            assert_eq!(error.name(), "InvalidAuthorityIndex");
+        }
+
+        {
+            let error = ConsensusError::InsufficientParentStakes {
+                parent_stakes: 5,
+                quorum: 20,
+            };
+            assert_eq!(error.name(), "InsufficientParentStakes");
+        }
+    }
 }

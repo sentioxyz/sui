@@ -197,6 +197,7 @@ mod test {
     use super::*;
     use crate::{
         block::{BlockRef, TestBlock},
+        commit::CommitRange,
         core::CoreSignals,
         network::BlockStream,
         Round,
@@ -259,10 +260,26 @@ mod test {
         async fn fetch_commits(
             &self,
             _peer: AuthorityIndex,
-            _start: Round,
-            _end: Round,
+            _commit_range: CommitRange,
             _timeout: Duration,
         ) -> ConsensusResult<(Vec<Bytes>, Vec<Bytes>)> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn fetch_latest_blocks(
+            &self,
+            _peer: AuthorityIndex,
+            _authorities: Vec<AuthorityIndex>,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<Bytes>> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn get_latest_rounds(
+            &self,
+            _peer: AuthorityIndex,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<Round>> {
             unimplemented!("Unimplemented")
         }
     }
@@ -299,7 +316,7 @@ mod test {
             if index == context.own_index {
                 continue;
             }
-            assert!(blocks_sent.get(&index).is_none());
+            assert!(!blocks_sent.contains_key(&index));
         }
 
         // ... until LAST_BLOCK_RETRY_INTERVAL

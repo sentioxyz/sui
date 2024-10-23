@@ -50,8 +50,35 @@ After you have the transaction defined, you can directly execute it with a signe
 `signAndExecuteTransaction`.
 
 ```tsx
-client.signAndExecuteTransactionB({ signer: keypair, transaction: tx });
+client.signAndExecuteTransaction({ signer: keypair, transaction: tx });
 ```
+
+## Observing the results of a transaction
+
+When you use `client.signAndExecuteTransaction` or `client.executeTransactionBlock`, the transaction
+will be finalized on the blockchain before the function resolves, but the effects of the transaction
+may not be immediately observable.
+
+There are 2 ways to observe the results of a transaction. Methods like
+`client.signAndExecuteTransaction` accept an `options` object with options like `showObjectChanges`
+and `showBalanceChanges` (see
+[the SuiClient docs for more details](/typescript/sui-client#arguments)). These options will cause
+the request to contain additional details about the effects of the transaction that can be
+immediately displayed to the user, or used for further processing in your application.
+
+The other way effects of transactions can be observed is by querying other RPC methods like
+`client.getBalances` that return objects or balances owned by a specific address. These RPC calls
+depend on the RPC node having indexed the effects of the transaction, which may not have happened
+immediately after a transaction has been executed. To ensure that effects of a transaction are
+represented in future RPC calls, you can use the `waitForTransaction` method on the client:
+
+```typescript
+const result = await client.signAndExecuteTransaction({ signer: keypair, transaction: tx });
+await client.waitForTransaction({ digest: result.digest });
+```
+
+Once `waitForTransaction` resolves, any future RPC calls will be guaranteed to reflect the effects
+of the transaction.
 
 ## Transactions
 
@@ -111,6 +138,36 @@ const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(100)]);
 const [coin] = tx.splitCoins(tx.gas, [tx.pure(bcs.U64.serialize(100))]);
 tx.transferObjects([coin], tx.pure.address('0xSomeSuiAddress'));
 tx.transferObjects([coin], tx.pure(bcs.Address.serialize('0xSomeSuiAddress')));
+```
+
+To pass `vector` or `option` types, you you can pass use the corresponding methods on `tx.pure`, use
+tx.pure as a function with a type argument, or serialize the value before passing it to tx.pure
+using the bcs sdk:
+
+```ts
+import { bcs } from '@mysten/sui/bcs';
+
+tx.moveCall({
+	target: '0x2::foo::bar',
+	arguments: [
+		// using vector and option methods
+		tx.pure.vector('u8', [1, 2, 3]),
+		tx.pure.option('u8', 1),
+		tx.pure.option('u8', null),
+
+		// Using pure with type arguments
+		tx.pure('vector<u8>', [1, 2, 3]),
+		tx.pure('option<u8>', 1),
+		tx.pure('option<u8>', null),
+		tx.pure('vector<option<u8>>', [1, null, 2]),
+
+		// Using bcs.serialize
+		tx.pure(bcs.vector(bcs.U8).serialize([1, 2, 3])),
+		tx.pure(bcs.option(bcs.U8).serialize(1)),
+		tx.pure(bcs.option(bcs.U8).serialize(null)),
+		tx.pure(bcs.vector(bcs.option(bcs.U8)).serialize([1, null, 2])),
+	],
+});
 ```
 
 #### Object references

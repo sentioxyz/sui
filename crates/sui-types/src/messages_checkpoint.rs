@@ -8,7 +8,7 @@ use crate::base_types::{
 use crate::committee::{EpochId, ProtocolVersion, StakeUnit};
 use crate::crypto::{
     default_hash, get_key_pair, AccountKeyPair, AggregateAuthoritySignature, AuthoritySignInfo,
-    AuthoritySignInfoTrait, AuthorityStrongQuorumSignInfo,
+    AuthoritySignInfoTrait, AuthorityStrongQuorumSignInfo, RandomnessRound,
 };
 use crate::digests::Digest;
 use crate::effects::{TestEffectsBuilder, TransactionEffectsAPI};
@@ -24,7 +24,9 @@ use crate::transaction::{Transaction, TransactionData};
 use crate::{base_types::AuthorityName, committee::Committee, error::SuiError};
 use anyhow::Result;
 use fastcrypto::hash::MultisetHash;
+use mysten_metrics::histogram::Histogram as MystenHistogram;
 use once_cell::sync::OnceCell;
+use prometheus::Histogram;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -32,6 +34,7 @@ use shared_crypto::intent::{Intent, IntentScope};
 use std::fmt::{Debug, Display, Formatter};
 use std::slice::Iter;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sui_protocol_config::ProtocolConfig;
 use tap::TapFallible;
 use tracing::warn;
 
@@ -40,8 +43,6 @@ pub use crate::digests::CheckpointDigest;
 
 pub type CheckpointSequenceNumber = u64;
 pub type CheckpointTimestamp = u64;
-
-use mysten_metrics::histogram::Histogram;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckpointRequest {
@@ -185,6 +186,8 @@ pub struct CheckpointSummary {
     /// code. Therefore, in order to allow extensions to be added to CheckpointSummary, we allow
     /// opaque data to be added to checkpoints which can be deserialized based on the current
     /// protocol version.
+    ///
+    /// This is implemented with BCS-serialized `CheckpointVersionSpecificData`.
     pub version_specific_data: Vec<u8>,
 }
 
@@ -199,6 +202,7 @@ impl Message for CheckpointSummary {
 
 impl CheckpointSummary {
     pub fn new(
+        protocol_config: &ProtocolConfig,
         epoch: EpochId,
         sequence_number: CheckpointSequenceNumber,
         network_total_transactions: u64,
@@ -207,8 +211,20 @@ impl CheckpointSummary {
         epoch_rolling_gas_cost_summary: GasCostSummary,
         end_of_epoch_data: Option<EndOfEpochData>,
         timestamp_ms: CheckpointTimestamp,
+        randomness_rounds: Vec<RandomnessRound>,
     ) -> CheckpointSummary {
         let content_digest = *transactions.digest();
+
+        let version_specific_data = match protocol_config
+            .checkpoint_summary_version_specific_data_as_option()
+        {
+            None | Some(0) => Vec::new(),
+            Some(1) => bcs::to_bytes(&CheckpointVersionSpecificData::V1(
+                CheckpointVersionSpecificDataV1 { randomness_rounds },
+            ))
+            .expect("version specific data should serialize"),
+            _ => unimplemented!("unrecognized version_specific_data version for CheckpointSummary"),
+        };
 
         Self {
             epoch,
@@ -219,7 +235,7 @@ impl CheckpointSummary {
             epoch_rolling_gas_cost_summary,
             end_of_epoch_data,
             timestamp_ms,
-            version_specific_data: Vec::new(),
+            version_specific_data,
             checkpoint_commitments: Default::default(),
         }
     }
@@ -249,10 +265,13 @@ impl CheckpointSummary {
             .map(|e| e.next_epoch_committee.as_slice())
     }
 
-    pub fn report_checkpoint_age_ms(&self, metrics: &Histogram) {
+    pub fn report_checkpoint_age(&self, metrics: &Histogram, metrics_deprecated: &MystenHistogram) {
         SystemTime::now()
             .duration_since(self.timestamp())
-            .map(|latency| metrics.report(latency.as_millis() as u64))
+            .map(|latency| {
+                metrics.observe(latency.as_secs_f64());
+                metrics_deprecated.report(latency.as_millis() as u64);
+            })
             .tap_err(|err| {
                 warn!(
                     checkpoint_seq = self.sequence_number,
@@ -264,6 +283,17 @@ impl CheckpointSummary {
 
     pub fn is_last_checkpoint_of_epoch(&self) -> bool {
         self.end_of_epoch_data.is_some()
+    }
+
+    pub fn version_specific_data(
+        &self,
+        config: &ProtocolConfig,
+    ) -> Result<Option<CheckpointVersionSpecificData>> {
+        match config.checkpoint_summary_version_specific_data_as_option() {
+            None | Some(0) => Ok(None),
+            Some(1) => Ok(Some(bcs::from_bytes(&self.version_specific_data)?)),
+            _ => unimplemented!("unrecognized version_specific_data version in CheckpointSummary"),
+        }
     }
 }
 
@@ -496,6 +526,10 @@ impl CheckpointContents {
         self.into_v1().transactions
     }
 
+    pub fn inner(&self) -> &[ExecutionDigests] {
+        &self.as_v1().transactions
+    }
+
     pub fn size(&self) -> usize {
         self.as_v1().transactions.len()
     }
@@ -709,6 +743,38 @@ impl VerifiedCheckpointContents {
     }
 }
 
+/// Holds data in CheckpointSummary that is serialized into the `version_specific_data` field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckpointVersionSpecificData {
+    V1(CheckpointVersionSpecificDataV1),
+}
+
+impl CheckpointVersionSpecificData {
+    pub fn as_v1(&self) -> &CheckpointVersionSpecificDataV1 {
+        match self {
+            Self::V1(v) => v,
+        }
+    }
+
+    pub fn into_v1(self) -> CheckpointVersionSpecificDataV1 {
+        match self {
+            Self::V1(v) => v,
+        }
+    }
+
+    pub fn empty_for_tests() -> CheckpointVersionSpecificData {
+        CheckpointVersionSpecificData::V1(CheckpointVersionSpecificDataV1 {
+            randomness_rounds: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointVersionSpecificDataV1 {
+    /// Lists the rounds for which RandomnessStateUpdate transactions are present in the checkpoint.
+    pub randomness_rounds: Vec<RandomnessRound>,
+}
+
 #[cfg(test)]
 #[cfg(feature = "test-utils")]
 mod tests {
@@ -745,6 +811,7 @@ mod tests {
                 SignedCheckpointSummary::new(
                     committee.epoch,
                     CheckpointSummary::new(
+                        &ProtocolConfig::get_for_max_version_UNSAFE(),
                         committee.epoch,
                         1,
                         0,
@@ -753,6 +820,7 @@ mod tests {
                         GasCostSummary::default(),
                         None,
                         0,
+                        Vec::new(),
                     ),
                     k,
                     name,
@@ -779,6 +847,7 @@ mod tests {
         let set = CheckpointContents::new_with_digests_only_for_tests([ExecutionDigests::random()]);
 
         let summary = CheckpointSummary::new(
+            &ProtocolConfig::get_for_max_version_UNSAFE(),
             committee.epoch,
             1,
             0,
@@ -787,6 +856,7 @@ mod tests {
             GasCostSummary::default(),
             None,
             0,
+            Vec::new(),
         );
 
         let sign_infos: Vec<_> = keys
@@ -818,6 +888,7 @@ mod tests {
                 SignedCheckpointSummary::new(
                     committee.epoch,
                     CheckpointSummary::new(
+                        &ProtocolConfig::get_for_max_version_UNSAFE(),
                         committee.epoch,
                         1,
                         0,
@@ -826,6 +897,7 @@ mod tests {
                         GasCostSummary::default(),
                         None,
                         0,
+                        Vec::new(),
                     ),
                     k,
                     name,
@@ -853,6 +925,7 @@ mod tests {
         digest: TransactionDigest,
     ) -> CheckpointSummary {
         CheckpointSummary::new(
+            &ProtocolConfig::get_for_max_version_UNSAFE(),
             1,
             2,
             10,
@@ -864,6 +937,7 @@ mod tests {
             GasCostSummary::default(),
             None,
             100,
+            Vec::new(),
         )
     }
 

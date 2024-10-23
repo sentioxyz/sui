@@ -1,10 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Output } from 'valibot';
+import type { InferOutput } from 'valibot';
 import { parse, safeParse } from 'valibot';
 
 import { withResolvers } from '../../utils/withResolvers.js';
+import type { StashedSupportedNetwork } from '../types.js';
 import type { StashedRequestData, StashedResponsePayload, StashedResponseTypes } from './events.js';
 import { StashedRequest, StashedResponse } from './events.js';
 
@@ -18,6 +19,7 @@ export class StashedPopup {
 	#id: string;
 	#origin: string;
 	#name: string;
+	#network: StashedSupportedNetwork;
 
 	#promise: Promise<unknown>;
 	#resolve: (data: unknown) => void;
@@ -25,7 +27,15 @@ export class StashedPopup {
 
 	#interval: ReturnType<typeof setInterval> | null = null;
 
-	constructor({ name, origin = DEFAULT_STASHED_ORIGIN }: { name: string; origin?: string }) {
+	constructor({
+		name,
+		network,
+		origin = DEFAULT_STASHED_ORIGIN,
+	}: {
+		name: string;
+		network: StashedSupportedNetwork;
+		origin?: string;
+	}) {
 		const popup = window.open('about:blank', '_blank');
 
 		if (!popup) {
@@ -36,6 +46,7 @@ export class StashedPopup {
 		this.#id = crypto.randomUUID();
 		this.#origin = origin;
 		this.#name = name;
+		this.#network = network;
 
 		const { promise, resolve, reject } = withResolvers();
 		this.#promise = promise;
@@ -65,6 +76,7 @@ export class StashedPopup {
 			`${this.#origin}/dapp/${type}?${new URLSearchParams({
 				id: this.#id,
 				origin: window.origin,
+				network: this.#network,
 				name: this.#name,
 			})}${data ? `#${new URLSearchParams(data as never)}` : ''}`,
 		);
@@ -77,7 +89,7 @@ export class StashedPopup {
 		this.#popup.close();
 	}
 
-	#listener(event: MessageEvent) {
+	#listener = (event: MessageEvent) => {
 		if (event.origin !== this.#origin) {
 			return;
 		}
@@ -91,7 +103,7 @@ export class StashedPopup {
 		} else if (output.payload.type === 'resolve') {
 			this.#resolve(output.payload.data);
 		}
-	}
+	};
 
 	#cleanup() {
 		if (this.#interval) {
@@ -103,9 +115,9 @@ export class StashedPopup {
 }
 
 export class StashedHost {
-	#request: Output<typeof StashedRequest>;
+	#request: InferOutput<typeof StashedRequest>;
 
-	constructor(request: Output<typeof StashedRequest>) {
+	constructor(request: InferOutput<typeof StashedRequest>) {
 		if (typeof window === 'undefined' || !window.opener) {
 			throw new Error(
 				'StashedHost can only be used in a window opened through `window.open`. `window.opener` is not available.',
@@ -124,7 +136,7 @@ export class StashedHost {
 						key,
 						value.replace(/ /g, '+'),
 					]),
-			  )
+				)
 			: {};
 
 		const request = parse(StashedRequest, {

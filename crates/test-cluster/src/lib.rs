@@ -5,8 +5,6 @@ use futures::Future;
 use futures::{future::join_all, StreamExt};
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use jsonrpsee::ws_client::WsClient;
-use jsonrpsee::ws_client::WsClientBuilder;
 use rand::{distributions::*, rngs::OsRng, seq::SliceRandom};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -23,6 +21,7 @@ use sui_bridge::types::CertifiedBridgeAction;
 use sui_bridge::types::VerifiedCertifiedBridgeAction;
 use sui_bridge::utils::publish_and_register_coins_return_add_coins_on_sui_action;
 use sui_bridge::utils::wait_for_server_to_be_up;
+use sui_config::genesis::Genesis;
 use sui_config::local_ip_utils::get_available_port;
 use sui_config::node::{AuthorityOverloadConfig, DBCheckpointConfig, RunWithRange};
 use sui_config::{Config, SUI_CLIENT_CONFIG, SUI_NETWORK_CONFIG};
@@ -37,7 +36,7 @@ use sui_json_rpc_types::{
 };
 use sui_keys::keystore::{AccountKeystore, FileBasedKeystore, Keystore};
 use sui_node::SuiNodeHandle;
-use sui_protocol_config::{ProtocolVersion, SupportedProtocolVersions};
+use sui_protocol_config::ProtocolVersion;
 use sui_sdk::apis::QuorumDriverApi;
 use sui_sdk::sui_client_config::{SuiClientConfig, SuiEnv};
 use sui_sdk::wallet_context::WalletContext;
@@ -48,7 +47,8 @@ use sui_swarm_config::genesis_config::{
 };
 use sui_swarm_config::network_config::NetworkConfig;
 use sui_swarm_config::network_config_builder::{
-    ProtocolVersionsConfig, SupportedProtocolVersionsCallback,
+    ProtocolVersionsConfig, StateAccumulatorV2EnabledCallback, StateAccumulatorV2EnabledConfig,
+    SupportedProtocolVersionsCallback,
 };
 use sui_swarm_config::node_config_builder::{FullnodeConfigBuilder, ValidatorConfigBuilder};
 use sui_test_transaction_builder::TestTransactionBuilder;
@@ -68,6 +68,7 @@ use sui_types::object::Object;
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait;
 use sui_types::sui_system_state::SuiSystemState;
 use sui_types::sui_system_state::SuiSystemStateTrait;
+use sui_types::supported_protocol_versions::SupportedProtocolVersions;
 use sui_types::traffic_control::{PolicyConfig, RemoteFirewallConfig};
 use sui_types::transaction::{
     CertifiedTransaction, ObjectArg, Transaction, TransactionData, TransactionDataAPI,
@@ -85,7 +86,6 @@ pub struct FullNodeHandle {
     pub sui_client: SuiClient,
     pub rpc_client: HttpClient,
     pub rpc_url: String,
-    pub ws_url: String,
 }
 
 impl FullNodeHandle {
@@ -93,7 +93,6 @@ impl FullNodeHandle {
         let rpc_url = format!("http://{}", json_rpc_address);
         let rpc_client = HttpClientBuilder::default().build(&rpc_url).unwrap();
 
-        let ws_url = format!("ws://{}", json_rpc_address);
         let sui_client = SuiClientBuilder::default().build(&rpc_url).await.unwrap();
 
         Self {
@@ -101,15 +100,7 @@ impl FullNodeHandle {
             sui_client,
             rpc_client,
             rpc_url,
-            ws_url,
         }
-    }
-
-    pub async fn ws_client(&self) -> WsClient {
-        WsClientBuilder::default()
-            .build(&self.ws_url)
-            .await
-            .unwrap()
     }
 }
 
@@ -209,6 +200,10 @@ impl TestCluster {
         self.swarm.active_validators().map(|v| v.name()).collect()
     }
 
+    pub fn get_genesis(&self) -> Genesis {
+        self.swarm.config().genesis.clone()
+    }
+
     pub fn stop_node(&self, name: &AuthorityName) {
         self.swarm.node(name).unwrap().stop();
     }
@@ -288,52 +283,6 @@ impl TestCluster {
             .get_latest_object_ref_or_tombstone(object_id)
             .unwrap()
             .unwrap()
-    }
-
-    /// To detect whether the network has reached such state, we use the fullnode as the
-    /// source of truth, since a fullnode only does epoch transition when the network has
-    /// done so.
-    /// If target_epoch is specified, wait until the cluster reaches that epoch.
-    /// If target_epoch is None, wait until the cluster reaches the next epoch.
-    /// Note that this function does not guarantee that every node is at the target epoch.
-    pub async fn wait_for_epoch(&self, target_epoch: Option<EpochId>) -> SuiSystemState {
-        self.wait_for_epoch_with_timeout(target_epoch, Duration::from_secs(60))
-            .await
-    }
-
-    pub async fn wait_for_epoch_with_timeout(
-        &self,
-        target_epoch: Option<EpochId>,
-        timeout_dur: Duration,
-    ) -> SuiSystemState {
-        let mut epoch_rx = self
-            .fullnode_handle
-            .sui_node
-            .with(|node| node.subscribe_to_epoch_change());
-        let mut state = Option::None;
-        timeout(timeout_dur, async {
-            while let Ok(system_state) = epoch_rx.recv().await {
-                info!("received epoch {}", system_state.epoch());
-                state = Some(system_state.clone());
-                match target_epoch {
-                    Some(target_epoch) if system_state.epoch() >= target_epoch => {
-                        return system_state;
-                    }
-                    None => {
-                        return system_state;
-                    }
-                    _ => (),
-                }
-            }
-            unreachable!("Broken reconfig channel");
-        })
-        .await
-        .unwrap_or_else(|_| {
-            if let Some(state) = state {
-                panic!("Timed out waiting for cluster to reach epoch {target_epoch:?}. Current epoch: {}", state.epoch());
-            }
-            panic!("Timed out waiting for cluster to target epoch {target_epoch:?}")
-        })
     }
 
     pub async fn wait_for_run_with_range_shutdown_signal(&self) -> Option<RunWithRange> {
@@ -427,6 +376,65 @@ impl TestCluster {
         self.wait_for_epoch_all_nodes(cur_committee.epoch + 1).await;
 
         info!("reconfiguration complete after {:?}", start.elapsed());
+    }
+
+    /// To detect whether the network has reached such state, we use the fullnode as the
+    /// source of truth, since a fullnode only does epoch transition when the network has
+    /// done so.
+    /// If target_epoch is specified, wait until the cluster reaches that epoch.
+    /// If target_epoch is None, wait until the cluster reaches the next epoch.
+    /// Note that this function does not guarantee that every node is at the target epoch.
+    pub async fn wait_for_epoch(&self, target_epoch: Option<EpochId>) -> SuiSystemState {
+        self.wait_for_epoch_with_timeout(target_epoch, Duration::from_secs(60))
+            .await
+    }
+
+    pub async fn wait_for_epoch_on_node(
+        &self,
+        handle: &SuiNodeHandle,
+        target_epoch: Option<EpochId>,
+        timeout_dur: Duration,
+    ) -> SuiSystemState {
+        let mut epoch_rx = handle.with(|node| node.subscribe_to_epoch_change());
+
+        let mut state = None;
+        timeout(timeout_dur, async {
+            let epoch = handle.with(|node| node.state().epoch_store_for_testing().epoch());
+            if Some(epoch) == target_epoch {
+                return handle.with(|node| node.state().get_sui_system_state_object_for_testing().unwrap());
+            }
+            while let Ok(system_state) = epoch_rx.recv().await {
+                info!("received epoch {}", system_state.epoch());
+                state = Some(system_state.clone());
+                match target_epoch {
+                    Some(target_epoch) if system_state.epoch() >= target_epoch => {
+                        return system_state;
+                    }
+                    None => {
+                        return system_state;
+                    }
+                    _ => (),
+                }
+            }
+            unreachable!("Broken reconfig channel");
+        })
+        .await
+        .unwrap_or_else(|_| {
+            error!("Timed out waiting for cluster to reach epoch {target_epoch:?}");
+            if let Some(state) = state {
+                panic!("Timed out waiting for cluster to reach epoch {target_epoch:?}. Current epoch: {}", state.epoch());
+            }
+            panic!("Timed out waiting for cluster to target epoch {target_epoch:?}")
+        })
+    }
+
+    pub async fn wait_for_epoch_with_timeout(
+        &self,
+        target_epoch: Option<EpochId>,
+        timeout_dur: Duration,
+    ) -> SuiSystemState {
+        self.wait_for_epoch_on_node(&self.fullnode_handle.sui_node, target_epoch, timeout_dur)
+            .await
     }
 
     pub async fn wait_for_epoch_all_nodes(&self, target_epoch: EpochId) {
@@ -875,6 +883,7 @@ pub struct TestClusterBuilder {
     num_validators: Option<usize>,
     fullnode_rpc_port: Option<u16>,
     enable_fullnode_events: bool,
+    disable_fullnode_pruning: bool,
     validator_supported_protocol_versions_config: ProtocolVersionsConfig,
     // Default to validator_supported_protocol_versions_config, but can be overridden.
     fullnode_supported_protocol_versions_config: Option<ProtocolVersionsConfig>,
@@ -892,6 +901,7 @@ pub struct TestClusterBuilder {
 
     max_submit_position: Option<usize>,
     submit_delay_step_override_millis: Option<u64>,
+    validator_state_accumulator_v2_enabled_config: StateAccumulatorV2EnabledConfig,
 }
 
 impl TestClusterBuilder {
@@ -903,6 +913,7 @@ impl TestClusterBuilder {
             fullnode_rpc_port: None,
             num_validators: None,
             enable_fullnode_events: false,
+            disable_fullnode_pruning: false,
             validator_supported_protocol_versions_config: ProtocolVersionsConfig::Default,
             fullnode_supported_protocol_versions_config: None,
             db_checkpoint_config_validators: DBCheckpointConfig::default(),
@@ -918,6 +929,9 @@ impl TestClusterBuilder {
             fullnode_fw_config: None,
             max_submit_position: None,
             submit_delay_step_override_millis: None,
+            validator_state_accumulator_v2_enabled_config: StateAccumulatorV2EnabledConfig::Global(
+                true,
+            ),
         }
     }
 
@@ -967,6 +981,11 @@ impl TestClusterBuilder {
 
     pub fn enable_fullnode_events(mut self) -> Self {
         self.enable_fullnode_events = true;
+        self
+    }
+
+    pub fn disable_fullnode_pruning(mut self) -> Self {
+        self.disable_fullnode_pruning = true;
         self
     }
 
@@ -1037,6 +1056,15 @@ impl TestClusterBuilder {
     ) -> Self {
         self.validator_supported_protocol_versions_config =
             ProtocolVersionsConfig::PerValidator(func);
+        self
+    }
+
+    pub fn with_state_accumulator_v2_enabled_callback(
+        mut self,
+        func: StateAccumulatorV2EnabledCallback,
+    ) -> Self {
+        self.validator_state_accumulator_v2_enabled_config =
+            StateAccumulatorV2EnabledConfig::PerValidator(func);
         self
     }
 
@@ -1146,7 +1174,7 @@ impl TestClusterBuilder {
         wallet_conf.envs.push(SuiEnv {
             alias: "localnet".to_string(),
             rpc: fullnode_handle.rpc_url.clone(),
-            ws: Some(fullnode_handle.ws_url.clone()),
+            ws: None,
             basic_auth: None,
         });
         wallet_conf.active_env = Some("localnet".to_string());
@@ -1170,6 +1198,10 @@ impl TestClusterBuilder {
 
     pub async fn build_with_bridge(
         self,
+        // Note: caller should make sure to keep the authority with largest stake at the end of the list.
+        // This is because we try to set up eth env and sui cluster at the same time. Since we use evenly
+        // distributed stake, we want to keep the authority with the remainder consistent in eth contracts
+        // and sui cluster.
         bridge_authority_keys: Vec<BridgeAuthorityKeyPair>,
         deploy_tokens: bool,
     ) -> TestCluster {
@@ -1200,11 +1232,32 @@ impl TestClusterBuilder {
         let mut server_ports = vec![];
         let mut tasks = vec![];
         let quorum_driver_api = test_cluster.quorum_driver_api().clone();
-        for (node, kp) in test_cluster
+        // Reorder the nodes so that the last node has the largest stake.
+        let validator_with_max_stake = test_cluster
+            .sui_client()
+            .governance_api()
+            .get_committee_info(None)
+            .await
+            .unwrap()
+            .validators
+            .iter()
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .unwrap()
+            .0;
+        let node_with_max_stake = test_cluster
             .swarm
             .active_validators()
-            .zip(bridge_authority_keys.iter())
-        {
+            .find(|v| v.config().protocol_public_key() == validator_with_max_stake)
+            .unwrap();
+        let other_nodes = test_cluster
+            .swarm
+            .active_validators()
+            .filter(|v| v.config().protocol_public_key() != validator_with_max_stake)
+            .collect::<Vec<_>>();
+        let reordered_nodes = other_nodes
+            .iter()
+            .chain(std::iter::once(&node_with_max_stake));
+        for (node, kp) in reordered_nodes.zip(bridge_authority_keys.iter()) {
             let validator_address = node.config().sui_address();
             // create committee registration tx
             let gas = test_cluster
@@ -1224,6 +1277,7 @@ impl TestClusterBuilder {
                 kp.public().as_bytes().to_vec(),
                 &server_url,
                 ref_gas_price,
+                1000000000,
             )
             .unwrap();
 
@@ -1354,6 +1408,9 @@ impl TestClusterBuilder {
             .with_supported_protocol_versions_config(
                 self.validator_supported_protocol_versions_config.clone(),
             )
+            .with_state_accumulator_v2_enabled_config(
+                self.validator_state_accumulator_v2_enabled_config.clone(),
+            )
             .with_fullnode_count(1)
             .with_fullnode_supported_protocol_versions_config(
                 self.fullnode_supported_protocol_versions_config
@@ -1403,6 +1460,10 @@ impl TestClusterBuilder {
         if let Some(submit_delay_step_override_millis) = self.submit_delay_step_override_millis {
             builder =
                 builder.with_submit_delay_step_override_millis(submit_delay_step_override_millis);
+        }
+
+        if self.disable_fullnode_pruning {
+            builder = builder.with_disable_fullnode_pruning();
         }
 
         let mut swarm = builder.build();

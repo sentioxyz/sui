@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::connection::ScanConnection;
 use crate::context_data::db_data_provider::{convert_to_validators, PgManager};
 use crate::data::{DataLoader, Db, DbConnection, QueryExecutor};
 use crate::error::Error;
@@ -15,11 +16,13 @@ use super::date_time::DateTime;
 use super::protocol_config::ProtocolConfigs;
 use super::system_state_summary::SystemStateSummary;
 use super::transaction_block::{self, TransactionBlock, TransactionBlockFilter};
+use super::uint53::UInt53;
 use super::validator_set::ValidatorSet;
 use async_graphql::connection::Connection;
 use async_graphql::dataloader::Loader;
 use async_graphql::*;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
+use diesel_async::scoped_futures::ScopedFutureExt;
 use fastcrypto::encoding::{Base58, Encoding};
 use sui_indexer::models::epoch::QueryableEpochInfo;
 use sui_indexer::schema::epochs;
@@ -31,7 +34,7 @@ pub(crate) struct Epoch {
     pub checkpoint_viewed_at: u64,
 }
 
-/// DataLoader key for fetching an `Epoch` by its ID, optionally constrained by a consistency
+/// `DataLoader` key for fetching an `Epoch` by its ID, optionally constrained by a consistency
 /// cursor.
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 struct EpochKey {
@@ -49,8 +52,8 @@ struct EpochKey {
 #[Object]
 impl Epoch {
     /// The epoch's id as a sequence number that starts at 0 and is incremented by one at every epoch change.
-    async fn epoch_id(&self) -> u64 {
-        self.stored.epoch as u64
+    async fn epoch_id(&self) -> UInt53 {
+        UInt53::from(self.stored.epoch as u64)
     }
 
     /// The minimum gas price that a quorum of validators are guaranteed to sign a transaction for.
@@ -66,9 +69,9 @@ impl Epoch {
             .await?;
 
         let active_validators = convert_to_validators(
-            system_state.active_validators,
-            None,
+            system_state.clone(),
             self.checkpoint_viewed_at,
+            self.stored.epoch as u64,
         );
         let validator_set = ValidatorSet {
             total_stake: Some(BigInt::from(self.stored.total_stake)),
@@ -101,7 +104,7 @@ impl Epoch {
     }
 
     /// The total number of checkpoints in this epoch.
-    async fn total_checkpoints(&self, ctx: &Context<'_>) -> Result<Option<BigInt>> {
+    async fn total_checkpoints(&self, ctx: &Context<'_>) -> Result<Option<UInt53>> {
         let last = match self.stored.last_checkpoint_id {
             Some(last) => last as u64,
             None => {
@@ -110,15 +113,18 @@ impl Epoch {
             }
         };
 
-        Ok(Some(BigInt::from(
+        Ok(Some(UInt53::from(
             last - self.stored.first_checkpoint_id as u64,
         )))
     }
 
     /// The total number of transaction blocks in this epoch.
-    async fn total_transactions(&self) -> Result<Option<u64>> {
+    async fn total_transactions(&self) -> Result<Option<UInt53>> {
         // TODO: this currently returns None for the current epoch. Fix this.
-        Ok(self.stored.epoch_total_transactions.map(|v| v as u64))
+        Ok(self
+            .stored
+            .epoch_total_transactions
+            .map(|v| UInt53::from(v as u64)))
     }
 
     /// The total amount of gas fees (in MIST) that were paid in this epoch.
@@ -225,6 +231,23 @@ impl Epoch {
     }
 
     /// The epoch's corresponding transaction blocks.
+    ///
+    /// `scanLimit` restricts the number of candidate transactions scanned when gathering a page of
+    /// results. It is required for queries that apply more than two complex filters (on function,
+    /// kind, sender, recipient, input object, changed object, or ids), and can be at most
+    /// `serviceConfig.maxScanLimit`.
+    ///
+    /// When the scan limit is reached the page will be returned even if it has fewer than `first`
+    /// results when paginating forward (`last` when paginating backwards). If there are more
+    /// transactions to scan, `pageInfo.hasNextPage` (or `pageInfo.hasPreviousPage`) will be set to
+    /// `true`, and `PageInfo.endCursor` (or `PageInfo.startCursor`) will be set to the last
+    /// transaction that was scanned as opposed to the last (or first) transaction in the page.
+    ///
+    /// Requesting the next (or previous) page after this cursor will resume the search, scanning
+    /// the next `scanLimit` many transactions in the direction of pagination, and so on until all
+    /// transactions in the scanning range have been visited.
+    ///
+    /// By default, the scanning range consists of all transactions in this epoch.
     async fn transaction_blocks(
         &self,
         ctx: &Context<'_>,
@@ -233,30 +256,30 @@ impl Epoch {
         last: Option<u64>,
         before: Option<transaction_block::Cursor>,
         filter: Option<TransactionBlockFilter>,
-    ) -> Result<Connection<String, TransactionBlock>> {
+        scan_limit: Option<u64>,
+    ) -> Result<ScanConnection<String, TransactionBlock>> {
         let page = Page::from_params(ctx.data_unchecked(), first, after, last, before)?;
 
         #[allow(clippy::unnecessary_lazy_evaluations)] // rust-lang/rust-clippy#9422
         let Some(filter) = filter
             .unwrap_or_default()
             .intersect(TransactionBlockFilter {
+                // If `first_checkpoint_id` is 0, we include the 0th checkpoint by leaving it None
                 after_checkpoint: (self.stored.first_checkpoint_id > 0)
-                    .then(|| self.stored.first_checkpoint_id as u64 - 1),
-                before_checkpoint: self.stored.last_checkpoint_id.map(|id| id as u64 + 1),
+                    .then(|| UInt53::from(self.stored.first_checkpoint_id as u64 - 1)),
+                before_checkpoint: self
+                    .stored
+                    .last_checkpoint_id
+                    .map(|id| UInt53::from(id as u64 + 1)),
                 ..Default::default()
             })
         else {
-            return Ok(Connection::new(false, false));
+            return Ok(ScanConnection::new(false, false));
         };
 
-        TransactionBlock::paginate(
-            ctx.data_unchecked(),
-            page,
-            filter,
-            self.checkpoint_viewed_at,
-        )
-        .await
-        .extend()
+        TransactionBlock::paginate(ctx, page, filter, self.checkpoint_viewed_at, scan_limit)
+            .await
+            .extend()
     }
 }
 
@@ -296,16 +319,20 @@ impl Epoch {
 
         let stored: Option<QueryableEpochInfo> = db
             .execute(move |conn| {
-                conn.first(move || {
-                    // Bound the query on `checkpoint_viewed_at` by filtering for the epoch
-                    // whose `first_checkpoint_id <= checkpoint_viewed_at`, selecting the epoch
-                    // with the largest `first_checkpoint_id` among the filtered set.
-                    dsl::epochs
-                        .select(QueryableEpochInfo::as_select())
-                        .filter(dsl::first_checkpoint_id.le(checkpoint_viewed_at as i64))
-                        .order_by(dsl::first_checkpoint_id.desc())
-                })
-                .optional()
+                async move {
+                    conn.first(move || {
+                        // Bound the query on `checkpoint_viewed_at` by filtering for the epoch
+                        // whose `first_checkpoint_id <= checkpoint_viewed_at`, selecting the epoch
+                        // with the largest `first_checkpoint_id` among the filtered set.
+                        dsl::epochs
+                            .select(QueryableEpochInfo::as_select())
+                            .filter(dsl::first_checkpoint_id.le(checkpoint_viewed_at as i64))
+                            .order_by(dsl::first_checkpoint_id.desc())
+                    })
+                    .await
+                    .optional()
+                }
+                .scope_boxed()
             })
             .await
             .map_err(|e| Error::Internal(format!("Failed to fetch epoch: {e}")))?;
@@ -328,11 +355,15 @@ impl Loader<EpochKey> for Db {
         let epoch_ids: BTreeSet<_> = keys.iter().map(|key| key.epoch_id as i64).collect();
         let epochs: Vec<QueryableEpochInfo> = self
             .execute_repeatable(move |conn| {
-                conn.results(move || {
-                    dsl::epochs
-                        .select(QueryableEpochInfo::as_select())
-                        .filter(dsl::epoch.eq_any(epoch_ids.iter().cloned()))
-                })
+                async move {
+                    conn.results(move || {
+                        dsl::epochs
+                            .select(QueryableEpochInfo::as_select())
+                            .filter(dsl::epoch.eq_any(epoch_ids.iter().cloned()))
+                    })
+                    .await
+                }
+                .scope_boxed()
             })
             .await
             .map_err(|e| Error::Internal(format!("Failed to fetch epochs: {e}")))?;

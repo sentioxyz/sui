@@ -5,9 +5,9 @@ use crate::{
     check_completed_snapshot,
     db_tool::{execute_db_tool_command, print_db_all_tables, DbToolCommand},
     download_db_snapshot, download_formal_snapshot, dump_checkpoints_from_archive,
-    get_latest_available_epoch, get_object, get_transaction_block, make_clients, pkg_dump,
+    get_latest_available_epoch, get_object, get_transaction_block, make_clients,
     restore_from_db_checkpoint, verify_archive, verify_archive_by_checksum, ConciseObjectOutput,
-    GroupedObjectOutput, VerboseObjectOutput,
+    GroupedObjectOutput, SnapshotVerifyMode, VerboseObjectOutput,
 };
 use anyhow::Result;
 use futures::{future::join_all, StreamExt};
@@ -22,7 +22,6 @@ use telemetry_subscribers::TracingHandle;
 
 use sui_types::{
     base_types::*, crypto::AuthorityPublicKeyBytes, messages_grpc::TransactionInfoRequest,
-    object::Owner,
 };
 
 use clap::*;
@@ -177,20 +176,25 @@ pub enum ToolCommand {
         max_content_length: usize,
     },
 
-    /// Download all packages to the local filesystem from an indexer database. Each package gets
-    /// its own sub-directory, named for its ID on-chain, containing two metadata files
-    /// (linkage.json and origins.json) as well as a file for every module it contains. Each module
-    /// file is named for its module name, with a .mv suffix, and contains Move bytecode (suitable
-    /// for passing into a disassembler).
+    /// Download all packages to the local filesystem from a GraphQL service. Each package gets its
+    /// own sub-directory, named for its ID on chain and version containing two metadata files
+    /// (linkage.json and origins.json), a file containing the overall object and a file for every
+    /// module it contains. Each module file is named for its module name, with a .mv suffix, and
+    /// contains Move bytecode (suitable for passing into a disassembler).
     #[command(name = "dump-packages")]
     DumpPackages {
-        /// Connection information for the Indexer's Postgres DB.
+        /// Connection information for a GraphQL service.
         #[clap(long, short)]
-        db_url: String,
+        rpc_url: String,
 
         /// Path to a non-existent directory that can be created and filled with package information.
         #[clap(long, short)]
         output_dir: PathBuf,
+
+        /// Only fetch packages that were created before this checkpoint (given by its sequence
+        /// number).
+        #[clap(long)]
+        before_checkpoint: Option<u64>,
 
         /// If false (default), log level will be overridden to "off", and output will be reduced to
         /// necessary status information.
@@ -323,10 +327,9 @@ pub enum ToolCommand {
         /// value based on number of available logical cores.
         #[clap(long = "num-parallel-downloads")]
         num_parallel_downloads: Option<usize>,
-        /// If true, perform snapshot and checkpoint summary verification.
-        /// Defaults to true.
-        #[clap(long = "verify")]
-        verify: Option<bool>,
+        /// Verification mode to employ.
+        #[clap(long = "verify", default_value = "normal")]
+        verify: Option<SnapshotVerifyMode>,
         /// Network to download snapshot for. Defaults to "mainnet".
         /// If `--snapshot-bucket` or `--archive-bucket` is not specified,
         /// the value of this flag is used to construct default bucket names.
@@ -366,6 +369,13 @@ pub enum ToolCommand {
         /// and output will be reduced to necessary status information.
         #[clap(long = "verbose")]
         verbose: bool,
+
+        /// If provided, all checkpoint summaries from genesis to the end of the target epoch
+        /// will be downloaded and (if --verify is provided) full checkpoint chain verification
+        /// will be performed. If omitted, only end of epoch checkpoint summaries will be
+        /// downloaded, and (if --verify is provided) will be verified via committee signature.
+        #[clap(long = "all-checkpoints")]
+        all_checkpoints: bool,
     },
 
     #[clap(name = "replay")]
@@ -406,59 +416,6 @@ pub enum ToolCommand {
         )]
         sender_signed_data: String,
     },
-}
-
-trait OptionDebug<T> {
-    fn opt_debug(&self, def_str: &str) -> String;
-}
-trait OptionDisplay<T> {
-    fn opt_display(&self, def_str: &str) -> String;
-}
-
-impl<T> OptionDebug<T> for Option<T>
-where
-    T: std::fmt::Debug,
-{
-    fn opt_debug(&self, def_str: &str) -> String {
-        match self {
-            None => def_str.to_string(),
-            Some(t) => format!("{:?}", t),
-        }
-    }
-}
-
-impl<T> OptionDisplay<T> for Option<T>
-where
-    T: std::fmt::Display,
-{
-    fn opt_display(&self, def_str: &str) -> String {
-        match self {
-            None => def_str.to_string(),
-            Some(t) => format!("{}", t),
-        }
-    }
-}
-
-struct OwnerOutput(Owner);
-
-// grep/awk-friendly output for Owner
-impl std::fmt::Display for OwnerOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Owner::AddressOwner(address) => {
-                write!(f, "address({})", address)
-            }
-            Owner::ObjectOwner(address) => {
-                write!(f, "object({})", address)
-            }
-            Owner::Immutable => {
-                write!(f, "immutable")
-            }
-            Owner::Shared { .. } => {
-                write!(f, "shared")
-            }
-        }
-    }
 }
 
 async fn check_locked_object(
@@ -627,8 +584,9 @@ impl ToolCommand {
                 }
             }
             ToolCommand::DumpPackages {
-                db_url,
+                rpc_url,
                 output_dir,
+                before_checkpoint,
                 verbose,
             } => {
                 if !verbose {
@@ -637,7 +595,7 @@ impl ToolCommand {
                         .expect("Failed to update log level");
                 }
 
-                pkg_dump::dump(db_url, output_dir).await?;
+                sui_package_dump::dump(rpc_url, output_dir, before_checkpoint).await?;
             }
             ToolCommand::DumpValidators { genesis, concise } => {
                 let genesis = Genesis::load(genesis).unwrap();
@@ -710,6 +668,7 @@ impl ToolCommand {
                 no_sign_request,
                 latest,
                 verbose,
+                all_checkpoints,
             } => {
                 if !verbose {
                     tracing_handle
@@ -876,7 +835,7 @@ impl ToolCommand {
                         _ => panic!("If setting `CUSTOM_ARCHIVE_BUCKET=true` must set FORMAL_SNAPSHOT_ARCHIVE_BUCKET_TYPE to one of 'gcs', 'azure', or 's3' "),
                     }
                 } else {
-                    // if not explictly overriden, just default to the permissionless archive store
+                    // if not explicitly overridden, just default to the permissionless archive store
                     ObjectStoreConfig {
                         object_store: Some(ObjectStoreType::S3),
                         bucket: archive_bucket.filter(|s| !s.is_empty()),
@@ -908,7 +867,7 @@ impl ToolCommand {
                     );
                 }
 
-                let verify = verify.unwrap_or(true);
+                let verify = verify.unwrap_or_default();
                 download_formal_snapshot(
                     &path,
                     epoch_to_download,
@@ -918,6 +877,7 @@ impl ToolCommand {
                     num_parallel_downloads,
                     network,
                     verify,
+                    all_checkpoints,
                 )
                 .await?;
             }
@@ -1126,9 +1086,8 @@ impl ToolCommand {
                 )
                 .unwrap();
                 let transaction = Transaction::new(sender_signed_data);
-                let (agg, _) = AuthorityAggregatorBuilder::from_genesis(&genesis)
-                    .build()
-                    .unwrap();
+                let (agg, _) =
+                    AuthorityAggregatorBuilder::from_genesis(&genesis).build_network_clients();
                 let result = agg.process_transaction(transaction, None).await;
                 println!("{:?}", result);
             }

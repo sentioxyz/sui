@@ -23,13 +23,18 @@ interface IBridgeLimiter {
         view
         returns (bool);
 
-    /// @dev Emitted when the hourly transfer amount is updated.
+    // We no longer emit this event but keep it here for ABI compatibility.
+    /// @dev (deprecated, not in use) Emitted when the hourly transfer amount is updated.
     /// @param hourUpdated The hour that was updated.
     /// @param amount The amount in USD transferred.
     event HourlyTransferAmountUpdated(uint32 hourUpdated, uint256 amount);
 
     /// @dev Emitted when the total limit is updated.
+    /// @param nonce The governance action nonce.
     /// @param sourceChainID The ID of the source chain.
     /// @param newLimit The new limit in USD with 4 decimal places (e.g. 10000 -> $1)
+    event LimitUpdatedV2(uint64 nonce, uint8 sourceChainID, uint64 newLimit);
+
+    /// @dev (deprecated in favor of LimitUpdatedV2)
     event LimitUpdated(uint8 sourceChainID, uint64 newLimit);
 }

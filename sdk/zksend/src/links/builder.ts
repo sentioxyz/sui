@@ -8,10 +8,10 @@ import type { Keypair, Signer } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import type { TransactionObjectArgument, TransactionObjectInput } from '@mysten/sui/transactions';
 import { Transaction } from '@mysten/sui/transactions';
-import { normalizeStructTag, normalizeSuiAddress, SUI_TYPE_ARG, toB64 } from '@mysten/sui/utils';
+import { normalizeStructTag, normalizeSuiAddress, SUI_TYPE_ARG, toBase64 } from '@mysten/sui/utils';
 
 import type { ZkBagContractOptions } from './zk-bag.js';
-import { MAINNET_CONTRACT_IDS, ZkBag } from './zk-bag.js';
+import { getContractIds, ZkBag } from './zk-bag.js';
 
 interface ZkSendLinkRedirect {
 	url: string;
@@ -54,6 +54,7 @@ export class ZkSendLinkBuilder {
 	}[] = [];
 	balances = new Map<string, bigint>();
 	sender: string;
+	network: 'mainnet' | 'testnet';
 	#host: string;
 	#path: string;
 	keypair: Keypair;
@@ -70,7 +71,7 @@ export class ZkSendLinkBuilder {
 		client = new SuiClient({ url: getFullnodeUrl(network) }),
 		sender,
 		redirect,
-		contract = network === 'mainnet' ? MAINNET_CONTRACT_IDS : undefined,
+		contract = getContractIds(network),
 	}: ZkSendLinkBuilderOptions) {
 		this.#host = host;
 		this.#path = path;
@@ -78,6 +79,7 @@ export class ZkSendLinkBuilder {
 		this.keypair = keypair;
 		this.#client = client;
 		this.sender = normalizeSuiAddress(sender);
+		this.network = network;
 
 		if (contract) {
 			this.#contract = new ZkBag(contract.packageId, contract);
@@ -104,9 +106,13 @@ export class ZkSendLinkBuilder {
 	getLink(): string {
 		const link = new URL(this.#host);
 		link.pathname = this.#path;
-		link.hash = `${this.#contract ? '$' : ''}${toB64(
+		link.hash = `${this.#contract ? '$' : ''}${toBase64(
 			decodeSuiPrivateKey(this.keypair.getSecretKey()).secretKey,
 		)}`;
+
+		if (this.network !== 'mainnet') {
+			link.searchParams.set('network', this.network);
+		}
 
 		if (this.#redirect) {
 			link.searchParams.set('redirect_url', this.#redirect.url);
@@ -130,7 +136,14 @@ export class ZkSendLinkBuilder {
 		const result = await this.#client.signAndExecuteTransaction({
 			transaction: await tx.build({ client: this.#client }),
 			signer,
+			options: {
+				showEffects: true,
+			},
 		});
+
+		if (result.effects?.status.status !== 'success') {
+			throw new Error(`Transaction failed: ${result.effects?.status.error ?? 'Unknown error'}`);
+		}
 
 		if (options.waitForTransaction) {
 			await this.#client.waitForTransaction({ digest: result.digest });
@@ -179,7 +192,7 @@ export class ZkSendLinkBuilder {
 						options: {
 							showType: true,
 						},
-				  })
+					})
 				: []
 			).map((res, i) => {
 				if (!res.data || res.error) {
@@ -231,7 +244,7 @@ export class ZkSendLinkBuilder {
 					balances: this.balances,
 					objects: [...this.objectIds],
 					gasEstimateFromDryRun,
-			  })
+				})
 			: gasEstimateFromDryRun * 2n;
 
 		// Ensure that rounded gas is not less than the calculated gas
@@ -306,7 +319,7 @@ export class ZkSendLinkBuilder {
 		network = 'mainnet',
 		client = new SuiClient({ url: getFullnodeUrl(network) }),
 		transaction = new Transaction(),
-		contract: contractIds = MAINNET_CONTRACT_IDS,
+		contract: contractIds = getContractIds(network),
 	}: {
 		transaction?: Transaction;
 		client?: SuiClient;
@@ -396,13 +409,15 @@ export class ZkSendLinkBuilder {
 
 		for (const link of links) {
 			const receiver = link.keypair.toSuiAddress();
-			contract.new(transaction, { arguments: [store, receiver] });
+			transaction.add(contract.new({ arguments: [store, receiver] }));
 
 			link.objectRefs.forEach(({ ref, type }) => {
-				contract.add(transaction, {
-					arguments: [store, receiver, ref],
-					typeArguments: [type],
-				});
+				transaction.add(
+					contract.add({
+						arguments: [store, receiver, ref],
+						typeArguments: [type],
+					}),
+				);
 			});
 
 			link.objectIds.forEach((id) => {
@@ -410,10 +425,12 @@ export class ZkSendLinkBuilder {
 				if (!object) {
 					throw new Error(`Object ${id} not found`);
 				}
-				contract.add(transaction, {
-					arguments: [store, receiver, object.ref],
-					typeArguments: [object.type],
-				});
+				transaction.add(
+					contract.add({
+						arguments: [store, receiver, object.ref],
+						typeArguments: [object.type],
+					}),
+				);
 			});
 		}
 
@@ -426,10 +443,12 @@ export class ZkSendLinkBuilder {
 			const balances = linksWithCoin.map((link) => link.balances.get(coinType)!);
 			const splits = transaction.splitCoins(merged, balances);
 			for (const [i, link] of linksWithCoin.entries()) {
-				contract.add(transaction, {
-					arguments: [store, link.keypair.toSuiAddress(), splits[i]],
-					typeArguments: [`0x2::coin::Coin<${coinType}>`],
-				});
+				transaction.add(
+					contract.add({
+						arguments: [store, link.keypair.toSuiAddress(), splits[i]],
+						typeArguments: [`0x2::coin::Coin<${coinType}>`],
+					}),
+				);
 			}
 		}
 

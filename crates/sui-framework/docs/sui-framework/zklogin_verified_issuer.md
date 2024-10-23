@@ -73,7 +73,7 @@ Possession of a VerifiedIssuer proves that the user's address was created using 
 Error if the proof consisting of the inputs provided to the verification function is invalid.
 
 
-<pre><code><b>const</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_EInvalidInput">EInvalidInput</a>: u64 = 0;
+<pre><code><b>const</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_EInvalidInput">EInvalidInput</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 0;
 </code></pre>
 
 
@@ -83,7 +83,7 @@ Error if the proof consisting of the inputs provided to the verification functio
 Error if the proof consisting of the inputs provided to the verification function is invalid.
 
 
-<pre><code><b>const</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_EInvalidProof">EInvalidProof</a>: u64 = 1;
+<pre><code><b>const</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_EInvalidProof">EInvalidProof</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 1;
 </code></pre>
 
 
@@ -183,20 +183,16 @@ Aborts with <code><a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issue
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_verify_zklogin_issuer">verify_zklogin_issuer</a>(
-    address_seed: u256,
-    issuer: String,
-    ctx: &<b>mut</b> TxContext,
-) {
+<pre><code><b>public</b> <b>fun</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_verify_zklogin_issuer">verify_zklogin_issuer</a>(address_seed: u256, issuer: String, ctx: &<b>mut</b> TxContext) {
     <b>let</b> sender = ctx.sender();
     <b>assert</b>!(<a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_check_zklogin_issuer">check_zklogin_issuer</a>(sender, address_seed, &issuer), <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_EInvalidProof">EInvalidProof</a>);
     <a href="transfer.md#0x2_transfer_transfer">transfer::transfer</a>(
         <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_VerifiedIssuer">VerifiedIssuer</a> {
             id: <a href="object.md#0x2_object_new">object::new</a>(ctx),
             owner: sender,
-            issuer
+            issuer,
         },
-        sender
+        sender,
     )
 }
 </code></pre>
@@ -221,12 +217,8 @@ Returns true if <code><b>address</b></code> was created using zklogin with the g
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_check_zklogin_issuer">check_zklogin_issuer</a>(
-    <b>address</b>: <b>address</b>,
-    address_seed: u256,
-    issuer: &String,
-): bool {
-    <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_check_zklogin_issuer_internal">check_zklogin_issuer_internal</a>(<b>address</b>, address_seed, issuer.bytes())
+<pre><code><b>public</b> <b>fun</b> <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_check_zklogin_issuer">check_zklogin_issuer</a>(<b>address</b>: <b>address</b>, address_seed: u256, issuer: &String): bool {
+    <a href="zklogin_verified_issuer.md#0x2_zklogin_verified_issuer_check_zklogin_issuer_internal">check_zklogin_issuer_internal</a>(<b>address</b>, address_seed, issuer.as_bytes())
 }
 </code></pre>
 

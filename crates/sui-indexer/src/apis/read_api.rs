@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use diesel::r2d2::R2D2Connection;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::RpcModule;
 use sui_json_rpc::error::SuiRpcInputError;
@@ -24,24 +23,18 @@ use sui_types::base_types::{ObjectID, SequenceNumber};
 use sui_types::digests::{ChainIdentifier, TransactionDigest};
 use sui_types::sui_serde::BigInt;
 
-use sui_json_rpc_types::SuiLoadedChildObjectsResponse;
-
 #[derive(Clone)]
-pub(crate) struct ReadApi<T: R2D2Connection + 'static> {
-    inner: IndexerReader<T>,
+pub struct ReadApi {
+    inner: IndexerReader,
 }
 
-impl<T: R2D2Connection + 'static> ReadApi<T> {
-    pub fn new(inner: IndexerReader<T>) -> Self {
+impl ReadApi {
+    pub fn new(inner: IndexerReader) -> Self {
         Self { inner }
     }
 
     async fn get_checkpoint(&self, id: CheckpointId) -> Result<Checkpoint, IndexerError> {
-        match self
-            .inner
-            .spawn_blocking(move |this| this.get_checkpoint(id))
-            .await
-        {
+        match self.inner.get_checkpoint(id).await {
             Ok(Some(epoch_info)) => Ok(epoch_info),
             Ok(None) => Err(IndexerError::InvalidArgumentError(format!(
                 "Checkpoint {id:?} not found"
@@ -51,9 +44,7 @@ impl<T: R2D2Connection + 'static> ReadApi<T> {
     }
 
     async fn get_latest_checkpoint(&self) -> Result<Checkpoint, IndexerError> {
-        self.inner
-            .spawn_blocking(|this| this.get_latest_checkpoint())
-            .await
+        self.inner.get_latest_checkpoint().await
     }
 
     async fn get_chain_identifier(&self) -> RpcResult<ChainIdentifier> {
@@ -63,49 +54,14 @@ impl<T: R2D2Connection + 'static> ReadApi<T> {
 }
 
 #[async_trait]
-impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
+impl ReadApiServer for ReadApi {
     async fn get_object(
         &self,
         object_id: ObjectID,
         options: Option<SuiObjectDataOptions>,
     ) -> RpcResult<SuiObjectResponse> {
-        let options = options.unwrap_or_default();
-        let object_read = self
-            .inner
-            .get_object_read_in_blocking_task(object_id)
-            .await?;
-
-        match object_read {
-            ObjectRead::NotExists(id) => Ok(SuiObjectResponse::new_with_error(
-                SuiObjectResponseError::NotExists { object_id: id },
-            )),
-            ObjectRead::Exists(object_ref, o, layout) => {
-                let mut display_fields = None;
-                if options.show_display {
-                    match self.inner.get_display_fields(&o, &layout).await {
-                        Ok(rendered_fields) => display_fields = Some(rendered_fields),
-                        Err(e) => {
-                            return Ok(SuiObjectResponse::new(
-                                Some((object_ref, o, layout, options, None).try_into()?),
-                                Some(SuiObjectResponseError::DisplayError {
-                                    error: e.to_string(),
-                                }),
-                            ));
-                        }
-                    }
-                }
-                Ok(SuiObjectResponse::new_with_data(
-                    (object_ref, o, layout, options, display_fields).try_into()?,
-                ))
-            }
-            ObjectRead::Deleted((object_id, version, digest)) => Ok(
-                SuiObjectResponse::new_with_error(SuiObjectResponseError::Deleted {
-                    object_id,
-                    version,
-                    digest,
-                }),
-            ),
-        }
+        let object_read = self.inner.get_object_read(object_id).await?;
+        object_read_to_object_response(&self.inner, object_read, options.unwrap_or_default()).await
     }
 
     // For ease of implementation we just forward to the single object query, although in the
@@ -121,16 +77,17 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
                 SuiRpcInputError::SizeLimitExceeded(QUERY_MAX_RESULT_LIMIT.to_string()).into(),
             );
         }
+        let stored_objects = self.inner.multi_get_objects(object_ids).await?;
+        let options = options.unwrap_or_default();
 
-        let mut futures = vec![];
-        for object_id in object_ids {
-            futures.push(self.get_object(object_id, options.clone()));
-        }
+        let futures = stored_objects.into_iter().map(|stored_object| async {
+            let object_read = stored_object
+                .try_into_object_read(self.inner.package_resolver())
+                .await?;
+            object_read_to_object_response(&self.inner, object_read, options.clone()).await
+        });
 
-        futures::future::join_all(futures)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
+        futures::future::try_join_all(futures).await
     }
 
     async fn get_total_transaction_blocks(&self) -> RpcResult<BigInt<u64>> {
@@ -187,6 +144,17 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
         .into())
     }
 
+    async fn try_get_object_before_version(
+        &self,
+        _: ObjectID,
+        _: SequenceNumber,
+    ) -> RpcResult<SuiPastObjectResponse> {
+        Err(jsonrpsee::types::error::CallError::Custom(
+            jsonrpsee::types::error::ErrorCode::MethodNotFound.into(),
+        )
+        .into())
+    }
+
     async fn try_multi_get_past_objects(
         &self,
         _past_objects: Vec<SuiGetPastObjectRequest>,
@@ -222,7 +190,7 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
 
         let mut checkpoints = self
             .inner
-            .spawn_blocking(move |this| this.get_checkpoints(cursor, limit + 1, descending_order))
+            .get_checkpoints(cursor, limit + 1, descending_order)
             .await?;
 
         let has_next_page = checkpoints.len() > limit;
@@ -253,19 +221,9 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
 
     async fn get_events(&self, transaction_digest: TransactionDigest) -> RpcResult<Vec<SuiEvent>> {
         self.inner
-            .get_transaction_events_in_blocking_task(transaction_digest)
+            .get_transaction_events(transaction_digest)
             .await
             .map_err(Into::into)
-    }
-
-    async fn get_loaded_child_objects(
-        &self,
-        _digest: TransactionDigest,
-    ) -> RpcResult<SuiLoadedChildObjectsResponse> {
-        Err(jsonrpsee::types::error::CallError::Custom(
-            jsonrpsee::types::error::ErrorCode::MethodNotFound.into(),
-        )
-        .into())
     }
 
     async fn get_protocol_config(
@@ -276,10 +234,7 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
         let version = if let Some(version) = version {
             (*version).into()
         } else {
-            let latest_epoch = self
-                .inner
-                .spawn_blocking(|this| this.get_latest_epoch_info_from_db())
-                .await?;
+            let latest_epoch = self.inner.get_latest_epoch_info_from_db().await?;
             (latest_epoch.protocol_version as u64).into()
         };
 
@@ -297,12 +252,50 @@ impl<T: R2D2Connection + 'static> ReadApiServer for ReadApi<T> {
     }
 }
 
-impl<T: R2D2Connection> SuiRpcModule for ReadApi<T> {
+impl SuiRpcModule for ReadApi {
     fn rpc(self) -> RpcModule<Self> {
         self.into_rpc()
     }
 
     fn rpc_doc_module() -> Module {
         sui_json_rpc_api::ReadApiOpenRpc::module_doc()
+    }
+}
+
+async fn object_read_to_object_response(
+    indexer_reader: &IndexerReader,
+    object_read: ObjectRead,
+    options: SuiObjectDataOptions,
+) -> RpcResult<SuiObjectResponse> {
+    match object_read {
+        ObjectRead::NotExists(id) => Ok(SuiObjectResponse::new_with_error(
+            SuiObjectResponseError::NotExists { object_id: id },
+        )),
+        ObjectRead::Exists(object_ref, o, layout) => {
+            let mut display_fields = None;
+            if options.show_display {
+                match indexer_reader.get_display_fields(&o, &layout).await {
+                    Ok(rendered_fields) => display_fields = Some(rendered_fields),
+                    Err(e) => {
+                        return Ok(SuiObjectResponse::new(
+                            Some((object_ref, o, layout, options, None).try_into()?),
+                            Some(SuiObjectResponseError::DisplayError {
+                                error: e.to_string(),
+                            }),
+                        ));
+                    }
+                }
+            }
+            Ok(SuiObjectResponse::new_with_data(
+                (object_ref, o, layout, options, display_fields).try_into()?,
+            ))
+        }
+        ObjectRead::Deleted((object_id, version, digest)) => Ok(SuiObjectResponse::new_with_error(
+            SuiObjectResponseError::Deleted {
+                object_id,
+                version,
+                digest,
+            },
+        )),
     }
 }

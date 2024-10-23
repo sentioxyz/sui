@@ -182,6 +182,30 @@ impl<P> ObjectProviderCache<P> {
         }
     }
 
+    pub fn insert_objects_into_cache(&mut self, objects: Vec<Object>) {
+        let object_cache = self.object_cache.get_mut();
+        let last_version_cache = self.last_version_cache.get_mut();
+
+        for object in objects {
+            let object_id = object.id();
+            let version = object.version();
+
+            let key = (object_id, version);
+            object_cache.insert(key, object.clone());
+
+            match last_version_cache.get_mut(&key) {
+                Some(existing_seq_number) => {
+                    if version > *existing_seq_number {
+                        *existing_seq_number = version
+                    }
+                }
+                None => {
+                    last_version_cache.insert(key, version);
+                }
+            }
+        }
+    }
+
     pub fn new_with_cache(
         provider: P,
         written_objects: BTreeMap<ObjectID, (ObjectRef, Object, WriteKind)>,

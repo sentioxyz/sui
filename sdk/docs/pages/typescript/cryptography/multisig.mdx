@@ -100,7 +100,7 @@ const signer = multiSigPublicKey.getSigner(kp1);
 
 const message = new TextEncoder().encode('hello world');
 const { signature } = await signer.signPersonalMessage(message);
-const isValid = await multiSigPublicKey.verifyPersonalMessage(message, combinedSignature);
+const isValid = await multiSigPublicKey.verifyPersonalMessage(message, signature);
 ```
 
 ## Multisig with zkLogin
@@ -142,7 +142,7 @@ const multisigAddress = multiSigPublicKey.toSuiAddress();
 const zkLoginSig = getZkLoginSignature({
 	inputs: zkLoginInputs,
 	maxEpoch: '2',
-	userSignature: fromB64(ephemeralSig),
+	userSignature: fromBase64(ephemeralSig),
 });
 
 // a valid multisig with just the zklogin signature.

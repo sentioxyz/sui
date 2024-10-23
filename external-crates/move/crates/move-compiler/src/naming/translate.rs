@@ -12,7 +12,7 @@ use crate::{
     editions::FeatureGate,
     expansion::{
         ast::{self as E, AbilitySet, Ellipsis, ModuleIdent, Mutability, Visibility},
-        translate::is_valid_datatype_or_constant_name as is_constant_name,
+        name_validation::is_valid_datatype_or_constant_name as is_constant_name,
     },
     ice,
     naming::{
@@ -23,7 +23,9 @@ use crate::{
     parser::ast::{
         self as P, ConstantName, DatatypeName, Field, FunctionName, VariantName, MACRO_MODIFIER,
     },
-    shared::{program_info::NamingProgramInfo, unique_map::UniqueMap, *},
+    shared::{
+        ide::EllipsisMatchEntries, program_info::NamingProgramInfo, unique_map::UniqueMap, *,
+    },
     FullyCompiledProgram,
 };
 use move_ir_types::location::*;
@@ -49,6 +51,7 @@ pub struct ResolvedModuleFunction {
     pub mident: ModuleIdent,
     pub name: FunctionName,
     pub tyarg_arity: usize,
+    #[allow(unused)]
     pub arity: usize,
 }
 
@@ -91,6 +94,7 @@ pub enum FieldInfo {
 pub struct ResolvedConstant {
     pub mident: ModuleIdent,
     pub name: ConstantName,
+    #[allow(unused)]
     pub decl_loc: Loc,
 }
 
@@ -136,6 +140,7 @@ pub(super) enum ResolvedConstructor {
 #[derive(Debug, Clone)]
 pub(super) enum ResolvedCallSubject {
     Builtin(Box<ResolvedBuiltinFunction>),
+    #[allow(unused)]
     Constructor(Box<ResolvedConstructor>),
     Function(Box<ResolvedModuleFunction>),
     Var(Box<N::Var>),
@@ -144,6 +149,7 @@ pub(super) enum ResolvedCallSubject {
 
 #[derive(Debug, Clone)]
 pub(super) enum ResolvedUseFunFunction {
+    #[allow(unused)]
     Builtin(Box<ResolvedBuiltinFunction>),
     Module(Box<ResolvedModuleFunction>),
     Unbound,
@@ -779,10 +785,20 @@ impl<'env> Context<'env> {
                 ResolvedCallSubject::Builtin(Box::new(resolved))
             }
             EA::Name(n) => {
+                let possibly_datatype_name = self
+                    .env
+                    .supports_feature(self.current_package, FeatureGate::PositionalFields)
+                    && is_constant_name(&n.value);
                 match self.resolve_local(
                     n.loc,
                     NameResolution::UnboundUnscopedName,
-                    |n| format!("Unbound function '{}' in current scope", n),
+                    |n| {
+                        if possibly_datatype_name {
+                            format!("Unbound datatype or function '{}' in current scope", n)
+                        } else {
+                            format!("Unbound function '{}' in current scope", n)
+                        }
+                    },
                     n,
                 ) {
                     None => {
@@ -1969,7 +1985,7 @@ fn function(
         warning_filter,
         index,
         attributes,
-        loc: _,
+        loc,
         visibility,
         macro_,
         entry,
@@ -2010,6 +2026,7 @@ fn function(
         warning_filter,
         index,
         attributes,
+        loc,
         visibility,
         macro_,
         entry,
@@ -2107,7 +2124,7 @@ fn struct_def(
         warning_filter,
         index,
         attributes,
-        loc: _loc,
+        loc,
         abilities,
         type_parameters,
         fields,
@@ -2119,6 +2136,7 @@ fn struct_def(
     N::StructDefinition {
         warning_filter,
         index,
+        loc,
         attributes,
         abilities,
         type_parameters,
@@ -2164,7 +2182,7 @@ fn enum_def(
         warning_filter,
         index,
         attributes,
-        loc: _loc,
+        loc,
         abilities,
         type_parameters,
         variants,
@@ -2176,6 +2194,7 @@ fn enum_def(
     N::EnumDefinition {
         warning_filter,
         index,
+        loc,
         attributes,
         abilities,
         type_parameters,
@@ -3179,7 +3198,7 @@ fn unique_pattern_binders(
 ) -> Vec<(Mutability, P::Var)> {
     use E::MatchPattern_ as EP;
 
-    fn report_duplicate(context: &mut Context, var: P::Var, locs: &Vec<(Mutability, Loc)>) {
+    fn report_duplicate(context: &mut Context, var: P::Var, locs: &[(Mutability, Loc)]) {
         assert!(locs.len() > 1, "ICE pattern duplicate detection error");
         let (_, first_loc) = locs.first().unwrap();
         let mut diag = diag!(
@@ -3377,6 +3396,7 @@ fn unique_pattern_binders(
 }
 
 fn expand_positional_ellipsis<T>(
+    context: &mut Context,
     missing: isize,
     args: Vec<E::Ellipsis<Spanned<T>>>,
     replacement: impl Fn(Loc) -> Spanned<T>,
@@ -3385,7 +3405,14 @@ fn expand_positional_ellipsis<T>(
         .flat_map(|p| match p {
             E::Ellipsis::Binder(p) => vec![p],
             E::Ellipsis::Ellipsis(eloc) => {
-                (0..=missing).map(|_| replacement(eloc)).collect::<Vec<_>>()
+                let result = (0..=missing).map(|_| replacement(eloc)).collect::<Vec<_>>();
+                if context.env.ide_mode() {
+                    let entries = (0..=missing).map(|_| "_".into()).collect::<Vec<_>>();
+                    let info = EllipsisMatchEntries::Positional(entries);
+                    let info = ide::IDEAnnotation::EllipsisMatchEntries(Box::new(info));
+                    context.env.add_ide_annotation(eloc, info);
+                }
+                result
             }
         })
         .enumerate()
@@ -3397,9 +3424,10 @@ fn expand_positional_ellipsis<T>(
 }
 
 fn expand_named_ellipsis<T>(
+    context: &mut Context,
     field_info: &FieldInfo,
     head_loc: Loc,
-    eloc: Loc,
+    ellipsis_loc: Loc,
     args: &mut UniqueMap<Field, (usize, Spanned<T>)>,
     replacement: impl Fn(Loc) -> Spanned<T>,
 ) {
@@ -3415,11 +3443,18 @@ fn expand_named_ellipsis<T>(
         fields.remove(&k);
     }
 
+    if context.env.ide_mode() {
+        let entries = fields.iter().map(|field| field.value()).collect::<Vec<_>>();
+        let info = EllipsisMatchEntries::Named(entries);
+        let info = ide::IDEAnnotation::EllipsisMatchEntries(Box::new(info));
+        context.env.add_ide_annotation(ellipsis_loc, info);
+    }
+
     let start_idx = args.len();
     for (i, f) in fields.into_iter().enumerate() {
         args.add(
-            Field(sp(eloc, f.value())),
-            (start_idx + i, replacement(eloc)),
+            Field(sp(ellipsis_loc, f.value())),
+            (start_idx + i, replacement(ellipsis_loc)),
         )
         .unwrap();
     }
@@ -3463,7 +3498,8 @@ fn match_pattern(context: &mut Context, in_pat: Box<E::MatchPattern>) -> Box<N::
             // NB: We may have more args than fields! Since we allow `..` to be zero-or-more
             // wildcards.
             let missing = (field_info.field_count() as isize) - n_pats.len() as isize;
-            let args = expand_positional_ellipsis(missing, n_pats, |eloc| sp(eloc, NP::Wildcard));
+            let args =
+                expand_positional_ellipsis(context, missing, n_pats, |eloc| sp(eloc, NP::Wildcard));
             let args = UniqueMap::maybe_from_iter(args.into_iter()).expect("ICE naming failed");
 
             match ctor {
@@ -3495,7 +3531,7 @@ fn match_pattern(context: &mut Context, in_pat: Box<E::MatchPattern>) -> Box<N::
             let mut args = args.map(|_, (idx, p)| (idx, *match_pattern(context, Box::new(p))));
             // If we have an ellipsis fill in any missing patterns
             if let Some(ellipsis_loc) = ellipsis {
-                expand_named_ellipsis(field_info, ploc, ellipsis_loc, &mut args, |eloc| {
+                expand_named_ellipsis(context, field_info, ploc, ellipsis_loc, &mut args, |eloc| {
                     sp(eloc, NP::Wildcard)
                 });
             }
@@ -3717,6 +3753,7 @@ fn lvalue(
                 E::FieldBindings::Named(mut efields, ellipsis) => {
                     if let Some(ellipsis_loc) = ellipsis {
                         expand_named_ellipsis(
+                            context,
                             &stype.field_info,
                             loc,
                             ellipsis_loc,
@@ -3731,7 +3768,8 @@ fn lvalue(
                     let fields = stype.field_info.field_count();
                     let missing = (fields as isize) - lvals.len() as isize;
 
-                    let expanded_lvals = expand_positional_ellipsis(missing, lvals, make_ignore);
+                    let expanded_lvals =
+                        expand_positional_ellipsis(context, missing, lvals, make_ignore);
                     UniqueMap::maybe_from_iter(expanded_lvals.into_iter()).unwrap()
                 }
             };
@@ -3800,11 +3838,18 @@ fn lvalue_list(
     case: LValueCase,
     sp!(loc, b_): E::LValueList,
 ) -> Option<N::LValueList> {
+    use N::LValue_ as NL;
     Some(sp(
         loc,
         b_.into_iter()
-            .map(|inner| lvalue(context, seen_locals, case, inner))
-            .collect::<Option<_>>()?,
+            .map(|inner| {
+                let inner_loc = inner.loc;
+                lvalue(context, seen_locals, case, inner).unwrap_or_else(|| {
+                    assert!(context.env.has_errors());
+                    sp(inner_loc, NL::Error)
+                })
+            })
+            .collect::<Vec<_>>(),
     ))
 }
 
@@ -4131,6 +4176,7 @@ fn remove_unused_bindings_lvalue(
 ) {
     match lvalue_ {
         N::LValue_::Ignore => (),
+        N::LValue_::Error => (),
         N::LValue_::Var {
             var,
             unused_binding,

@@ -1,4 +1,4 @@
-//# init --edition 2024.alpha
+//# init --edition 2024.beta
 
 //# publish
 module 0x42::m {
@@ -14,7 +14,7 @@ module 0x42::m {
 }
 
 //# run
-module 0x42::main {
+module 0x43::main {
 
     fun main() {
         use 0x42::m::fib;

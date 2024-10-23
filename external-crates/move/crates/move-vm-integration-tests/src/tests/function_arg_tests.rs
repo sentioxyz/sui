@@ -2,7 +2,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::compiler::{as_module, compile_units};
+use crate::compiler::{as_module, compile_units, serialize_module_at_max_version};
 use move_binary_format::errors::VMResult;
 use move_core_types::{
     account_address::AccountAddress,
@@ -39,8 +39,8 @@ fn run(
     let code = format!(
         r#"
         module 0x{}::M {{
-            struct Foo has copy, drop {{ x: u64 }}
-            struct Bar<T> has copy, drop {{ x: T }}
+            public struct Foo has copy, drop {{ x: u64 }}
+            public struct Bar<T> has copy, drop {{ x: T }}
 
             fun foo<{}>({}) {{ }}
         }}
@@ -51,7 +51,7 @@ fn run(
     let mut units = compile_units(&code).unwrap();
     let m = as_module(units.pop().unwrap());
     let mut blob = vec![];
-    m.serialize(&mut blob).unwrap();
+    serialize_module_at_max_version(&m, &mut blob).unwrap();
 
     let mut storage = InMemoryStorage::new();
     let module_id = ModuleId::new(TEST_ADDR, Identifier::new("M").unwrap());

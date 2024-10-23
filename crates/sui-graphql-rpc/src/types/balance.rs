@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::available_range::AvailableRange;
-use super::cursor::{self, Page, RawPaginated, Target};
+use super::cursor::{self, Page, RawPaginated, ScanLimited, Target};
+use super::uint53::UInt53;
 use super::{big_int::BigInt, move_type::MoveType, sui_address::SuiAddress};
 use crate::consistency::Checkpointed;
 use crate::data::{Db, DbConnection, QueryExecutor};
@@ -15,10 +16,11 @@ use diesel::{
     sql_types::{BigInt as SqlBigInt, Nullable, Text},
     OptionalExtension, QueryableByName,
 };
+use diesel_async::scoped_futures::ScopedFutureExt;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use sui_indexer::types::OwnerType;
-use sui_types::{parse_sui_type_tag, TypeTag};
+use sui_types::TypeTag;
 
 /// The total balance for a particular coin type.
 #[derive(Clone, Debug, SimpleObject)]
@@ -26,7 +28,7 @@ pub(crate) struct Balance {
     /// Coin type for the balance, such as 0x2::sui::SUI
     pub(crate) coin_type: MoveType,
     /// How many coins of this type constitute the balance
-    pub(crate) coin_object_count: Option<u64>,
+    pub(crate) coin_object_count: Option<UInt53>,
     /// Total balance across all coin objects of the coin type
     pub(crate) total_balance: Option<BigInt>,
 }
@@ -68,14 +70,19 @@ impl Balance {
     ) -> Result<Option<Balance>, Error> {
         let stored: Option<StoredBalance> = db
             .execute_repeatable(move |conn| {
-                let Some(range) = AvailableRange::result(conn, checkpoint_viewed_at)? else {
-                    return Ok::<_, diesel::result::Error>(None);
-                };
+                async move {
+                    let Some(range) = AvailableRange::result(conn, checkpoint_viewed_at).await?
+                    else {
+                        return Ok::<_, diesel::result::Error>(None);
+                    };
 
-                conn.result(move || {
-                    balance_query(address, Some(coin_type.clone()), range).into_boxed()
-                })
-                .optional()
+                    conn.result(move || {
+                        balance_query(address, Some(coin_type.clone()), range).into_boxed()
+                    })
+                    .await
+                    .optional()
+                }
+                .scope_boxed()
             })
             .await?;
 
@@ -98,17 +105,23 @@ impl Balance {
 
         let Some((prev, next, results)) = db
             .execute_repeatable(move |conn| {
-                let Some(range) = AvailableRange::result(conn, checkpoint_viewed_at)? else {
-                    return Ok::<_, diesel::result::Error>(None);
-                };
+                async move {
+                    let Some(range) = AvailableRange::result(conn, checkpoint_viewed_at).await?
+                    else {
+                        return Ok::<_, diesel::result::Error>(None);
+                    };
 
-                let result = page.paginate_raw_query::<StoredBalance>(
-                    conn,
-                    checkpoint_viewed_at,
-                    balance_query(address, None, range),
-                )?;
+                    let result = page
+                        .paginate_raw_query::<StoredBalance>(
+                            conn,
+                            checkpoint_viewed_at,
+                            balance_query(address, None, range),
+                        )
+                        .await?;
 
-                Ok(Some(result))
+                    Ok(Some(result))
+                }
+                .scope_boxed()
             })
             .await?
         else {
@@ -160,6 +173,8 @@ impl Checkpointed for Cursor {
     }
 }
 
+impl ScanLimited for Cursor {}
+
 impl TryFrom<StoredBalance> for Balance {
     type Error = Error;
 
@@ -174,12 +189,11 @@ impl TryFrom<StoredBalance> for Balance {
             .transpose()
             .map_err(|_| Error::Internal("Failed to read balance.".to_string()))?;
 
-        let coin_object_count = count.map(|c| c as u64);
+        let coin_object_count = count.map(|c| UInt53::from(c as u64));
 
-        let coin_type = MoveType::new(
-            parse_sui_type_tag(&coin_type)
-                .map_err(|e| Error::Internal(format!("Failed to parse coin type: {e}")))?,
-        );
+        let coin_type = TypeTag::from_str(&coin_type)
+            .map_err(|e| Error::Internal(format!("Failed to parse coin type: {e}")))?
+            .into();
 
         Ok(Balance {
             coin_type,

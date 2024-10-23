@@ -39,7 +39,7 @@ clap = { version = "4", features = ["derive"] }
 codespan = "0.11.1"
 codespan-reporting = "0.11.1"
 colored = "2.0.0"
-criterion = "0.3.4"
+criterion = { version = "0.3.4", features = ["html_reports"]}
 criterion-cpu-time = "0.1.0"
 crossbeam = "0.8"
 crossbeam-channel = "0.5.0"
@@ -63,8 +63,10 @@ hex = "0.4.3"
 hex-literal = "0.3.4"
 hkdf = "0.10.0"
 im = "15.1.0"
+indexmap = "2.1.0"
 internment = { version = "0.5.0", features = [ "arc"] }
 itertools = "0.10.0"
+json_comments = "0.2.2"
 leb128 = "0.2.5"
 libfuzzer-sys = "0.4"
 log = { version = "0.4.14", features = ["serde"] }
@@ -82,7 +84,7 @@ parking_lot = "0.11.1"
 paste = "1.0.5"
 petgraph = "0.5.1"
 phf = { version = "0.11", features = ["macros"] }
-plotters = { version = "0.3.0", default_features = false, features = ["evcxr", "line_series", "histogram"]}
+plotters = { version = "0.3.0", default-features = false, features = ["evcxr", "line_series", "histogram"]}
 pretty = "0.10.0"
 prettydiff = "0.4.0"
 primitive-types = { version = "0.10.1", features = ["impl-serde"]}
@@ -101,6 +103,7 @@ serde-reflection = "0.3.2"
 serde_bytes = "0.11.5"
 serde_json = "1.0.64"
 serde_yaml = "0.8.26"
+serde_with = "3.9.0"
 sha2 = "0.9.3"
 sha3 = "0.9.1"
 shell-words = "1.0.0"
@@ -150,7 +153,6 @@ move-core-types = { path = "crates/move-core-types" }
 move-coverage = { path = "crates/move-coverage" }
 move-disassembler = { path = "crates/move-disassembler" }
 move-docgen = { path = "crates/move-docgen" }
-move-errmapgen = { path = "crates/move-errmapgen" }
 move-ir-compiler = { path = "crates/move-ir-compiler" }
 move-ir-to-bytecode = { path = "crates/move-ir-to-bytecode" }
 move-ir-to-bytecode-syntax = { path = "crates/move-ir-to-bytecode-syntax" }

@@ -62,6 +62,13 @@ pub fn run(args: Args) -> crate::Result<()> {
                     type_: BannedDepType::Always,
                 },
             ),
+            (
+                "pq-sys".to_owned(),
+                BannedDepConfig {
+                    message: "diesel_async asynchronous database connections instead".to_owned(),
+                    type_: BannedDepType::Always,
+                },
+            ),
         ]
         .into_iter()
         .collect(),
@@ -93,7 +100,7 @@ pub fn run(args: Args) -> crate::Result<()> {
         &PublishedPackagesDontDependOnUnpublishedPackages,
         &OnlyPublishToCratesIo,
         &CratesInCratesDirectory,
-        // TODO: re-enable after moving Narwhal crates to crates/, or back to Narwhal repo.
+        // There are crates under consensus/, external-crates/.
         // &CratesOnlyInCratesDirectory,
     ];
 

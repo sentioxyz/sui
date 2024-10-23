@@ -64,12 +64,13 @@ fn move_check_testsuite(path: &Path) -> datatest_stable::Result<()> {
     } else if path_contains(DEV_DIR) {
         Edition::DEVELOPMENT
     } else {
-        Edition::default()
+        Edition::LEGACY
     };
     let config = PackageConfig {
         flavor,
         edition,
-        ..PackageConfig::default()
+        is_dependency: false,
+        warning_filter: WarningFilters::new_for_source(),
     };
     testsuite(path, config, lint)
 }

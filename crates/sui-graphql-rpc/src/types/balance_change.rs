@@ -25,6 +25,7 @@ impl BalanceChange {
             O::AddressOwner(addr) | O::ObjectOwner(addr) => Some(Owner {
                 address: SuiAddress::from(addr),
                 checkpoint_viewed_at: self.checkpoint_viewed_at,
+                root_version: None,
             }),
 
             O::Shared { .. } | O::Immutable => None,
@@ -33,7 +34,7 @@ impl BalanceChange {
 
     /// The inner type of the coin whose balance has changed (e.g. `0x2::sui::SUI`).
     async fn coin_type(&self) -> Option<MoveType> {
-        Some(MoveType::new(self.stored.coin_type.clone()))
+        Some(self.stored.coin_type.clone().into())
     }
 
     /// The signed balance change.

@@ -10,17 +10,17 @@ use crate::{
     command_line as cli,
     diagnostics::{
         codes::{Category, Declarations, DiagnosticsID, Severity, WarningFilter},
-        Diagnostic, Diagnostics, DiagnosticsFormat, FileName, MappedFiles, WarningFilters,
+        Diagnostic, Diagnostics, DiagnosticsFormat, WarningFilters,
     },
-    editions::{
-        check_feature_or_error as edition_check_feature, feature_edition_error_msg, Edition,
-        FeatureGate, Flavor,
-    },
+    editions::{check_feature_or_error, feature_edition_error_msg, Edition, FeatureGate, Flavor},
     expansion::ast as E,
     hlir::ast as H,
     naming::ast as N,
     parser::ast as P,
-    shared::ide::{IDEAnnotation, IDEInfo},
+    shared::{
+        files::{FileName, MappedFiles},
+        ide::{IDEAnnotation, IDEInfo},
+    },
     sui_mode,
     typing::{
         ast as T,
@@ -46,8 +46,10 @@ use std::{
 use vfs::{VfsError, VfsPath};
 
 pub mod ast_debug;
+pub mod files;
 pub mod ide;
 pub mod known_attributes;
+pub mod matching;
 pub mod program_info;
 pub mod remembering_unique_map;
 pub mod string_utils;
@@ -185,6 +187,9 @@ pub const FILTER_UNUSED_MUT_REF: &str = "unused_mut_ref";
 pub const FILTER_UNUSED_MUT_PARAM: &str = "unused_mut_parameter";
 pub const FILTER_IMPLICIT_CONST_COPY: &str = "implicit_const_copy";
 pub const FILTER_DUPLICATE_ALIAS: &str = "duplicate_alias";
+pub const FILTER_DEPRECATED: &str = "deprecated_usage";
+pub const FILTER_IDE_PATH_AUTOCOMPLETE: &str = "ide_path_autocomplete";
+pub const FILTER_IDE_DOT_AUTOCOMPLETE: &str = "ide_dot_autocomplete";
 
 pub type NamedAddressMap = BTreeMap<Symbol, NumericalAddress>;
 
@@ -276,12 +281,12 @@ impl CompilationEnv {
         package_configs: BTreeMap<Symbol, PackageConfig>,
         default_config: Option<PackageConfig>,
     ) -> Self {
-        use crate::diagnostics::codes::{TypeSafety, UnusedItem};
+        use crate::diagnostics::codes::{TypeSafety, UnusedItem, IDE};
         visitors.extend([
             sui_mode::id_leak::IDLeakVerifier.visitor(),
             sui_mode::typing::SuiTypeChecks.visitor(),
         ]);
-        let known_filters_: BTreeMap<FilterName, BTreeSet<WarningFilter>> = BTreeMap::from([
+        let mut known_filters_: BTreeMap<FilterName, BTreeSet<WarningFilter>> = BTreeMap::from([
             (
                 FILTER_ALL.into(),
                 BTreeSet::from([WarningFilter::All(None)]),
@@ -326,7 +331,14 @@ impl CompilationEnv {
             known_code_filter!(FILTER_UNUSED_MUT_PARAM, UnusedItem::MutParam),
             known_code_filter!(FILTER_IMPLICIT_CONST_COPY, TypeSafety::ImplicitConstantCopy),
             known_code_filter!(FILTER_DUPLICATE_ALIAS, Declarations::DuplicateAlias),
+            known_code_filter!(FILTER_DEPRECATED, TypeSafety::DeprecatedUsage),
         ]);
+        if flags.ide_mode() {
+            known_filters_.extend([
+                known_code_filter!(FILTER_IDE_PATH_AUTOCOMPLETE, IDE::PathAutocomplete),
+                known_code_filter!(FILTER_IDE_DOT_AUTOCOMPLETE, IDE::DotAutocomplete),
+            ]);
+        }
         let known_filters: BTreeMap<FilterPrefix, BTreeMap<FilterName, BTreeSet<WarningFilter>>> =
             BTreeMap::from([(None, known_filters_)]);
 
@@ -387,7 +399,7 @@ impl CompilationEnv {
         self.mapped_files.add(file_hash, file_name, source_text)
     }
 
-    pub fn file_mapping(&self) -> &MappedFiles {
+    pub fn mapped_files(&self) -> &MappedFiles {
         &self.mapped_files
     }
 
@@ -453,10 +465,7 @@ impl CompilationEnv {
     }
 
     pub fn has_diags_at_or_above_severity(&self, threshold: Severity) -> bool {
-        match self.diags.max_severity() {
-            Some(max) if max >= threshold => true,
-            Some(_) | None => false,
-        }
+        self.diags.max_severity_at_or_above_severity(threshold)
     }
 
     pub fn check_diags_at_or_above_severity(
@@ -478,10 +487,7 @@ impl CompilationEnv {
     /// Should only be called after compilation is finished
     pub fn take_final_warning_diags(&mut self) -> Diagnostics {
         let final_diags = self.take_final_diags();
-        debug_assert!(final_diags
-            .max_severity()
-            .map(|s| s == Severity::Warning)
-            .unwrap_or(true));
+        debug_assert!(final_diags.max_severity_at_or_under_severity(Severity::Warning));
         final_diags
     }
 
@@ -579,7 +585,7 @@ impl CompilationEnv {
         feature: FeatureGate,
         loc: Loc,
     ) -> bool {
-        edition_check_feature(self, self.package_config(package).edition, feature, loc)
+        check_feature_or_error(self, self.package_config(package).edition, feature, loc)
     }
 
     // Returns an error string if if the feature isn't supported, or None otherwise.
@@ -603,6 +609,14 @@ impl CompilationEnv {
         package
             .and_then(|p| self.package_configs.get(&p))
             .unwrap_or(&self.default_config)
+    }
+
+    pub fn package_configs(&self) -> impl Iterator<Item = (Option<Symbol>, &PackageConfig)> {
+        std::iter::once((None, &self.default_config)).chain(
+            self.package_configs
+                .iter()
+                .map(|(n, config)| (Some(*n), config)),
+        )
     }
 
     pub fn set_primitive_type_definers(
@@ -668,7 +682,7 @@ impl CompilationEnv {
         if self.flags().ide_test_mode() {
             for entry in info.annotations.iter() {
                 let diag = entry.clone().into();
-                self.diags.add(diag);
+                self.add_diag(diag);
             }
         }
         self.ide_information.extend(info);
@@ -677,7 +691,7 @@ impl CompilationEnv {
     pub fn add_ide_annotation(&mut self, loc: Loc, info: IDEAnnotation) {
         if self.flags().ide_test_mode() {
             let diag = (loc, info.clone()).into();
-            self.diags.add(diag);
+            self.add_diag(diag);
         }
         self.ide_information.add_ide_annotation(loc, info);
     }
@@ -929,9 +943,9 @@ impl Default for PackageConfig {
 //**************************************************************************************************
 
 pub struct Visitors {
-    pub typing: Vec<RefCell<TypingVisitorObj>>,
-    pub abs_int: Vec<RefCell<AbsIntVisitorObj>>,
-    pub cfgir: Vec<RefCell<CFGIRVisitorObj>>,
+    pub typing: Vec<TypingVisitorObj>,
+    pub abs_int: Vec<AbsIntVisitorObj>,
+    pub cfgir: Vec<CFGIRVisitorObj>,
 }
 
 impl Visitors {
@@ -944,13 +958,22 @@ impl Visitors {
         };
         for pass in passes {
             match pass {
-                Visitor::AbsIntVisitor(f) => vs.abs_int.push(RefCell::new(f)),
-                Visitor::TypingVisitor(f) => vs.typing.push(RefCell::new(f)),
-                Visitor::CFGIRVisitor(f) => vs.cfgir.push(RefCell::new(f)),
+                Visitor::AbsIntVisitor(f) => vs.abs_int.push(f),
+                Visitor::TypingVisitor(f) => vs.typing.push(f),
+                Visitor::CFGIRVisitor(f) => vs.cfgir.push(f),
             }
         }
         vs
     }
+}
+
+// TODO remove it once visitor invocation is parallel
+#[allow(unused)]
+fn check<T: Send + Sync>() {}
+#[allow(unused)]
+fn check_all() {
+    check::<Visitors>();
+    check::<&Visitors>();
 }
 
 //**************************************************************************************************

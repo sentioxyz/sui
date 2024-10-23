@@ -7,12 +7,15 @@ use crate::error::{BridgeError, BridgeResult};
 use crate::test_utils::DUMMY_MUTALBE_BRIDGE_OBJECT_ARG;
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use sui_json_rpc_types::SuiTransactionBlockResponse;
 use sui_json_rpc_types::{EventFilter, EventPage, SuiEvent};
 use sui_types::base_types::ObjectID;
 use sui_types::base_types::ObjectRef;
-use sui_types::bridge::{BridgeSummary, MoveTypeParsedTokenTransferMessage};
+use sui_types::bridge::{
+    BridgeCommitteeSummary, BridgeSummary, MoveTypeParsedTokenTransferMessage,
+};
 use sui_types::digests::TransactionDigest;
 use sui_types::event::EventID;
 use sui_types::gas_coin::GasCoin;
@@ -22,7 +25,7 @@ use sui_types::transaction::Transaction;
 use sui_types::Identifier;
 
 use crate::sui_client::SuiClientInner;
-use crate::types::{BridgeAction, BridgeActionStatus};
+use crate::types::{BridgeAction, BridgeActionStatus, IsBridgePaused};
 
 /// Mock client used in test environments.
 #[allow(clippy::type_complexity)]
@@ -30,7 +33,7 @@ use crate::types::{BridgeAction, BridgeActionStatus};
 pub struct SuiMockClient {
     // the top two fields do not change during tests so we don't need them to be Arc<Mutex>>
     chain_identifier: String,
-    latest_checkpoint_sequence_number: u64,
+    latest_checkpoint_sequence_number: Arc<AtomicU64>,
     events: Arc<Mutex<HashMap<(ObjectID, Identifier, Option<EventID>), EventPage>>>,
     past_event_query_params: Arc<Mutex<VecDeque<(ObjectID, Identifier, Option<EventID>)>>>,
     events_by_tx_digest:
@@ -40,7 +43,8 @@ pub struct SuiMockClient {
     wildcard_transaction_response: Arc<Mutex<Option<BridgeResult<SuiTransactionBlockResponse>>>>,
     get_object_info: Arc<Mutex<HashMap<ObjectID, (GasCoin, ObjectRef, Owner)>>>,
     onchain_status: Arc<Mutex<HashMap<(u8, u64), BridgeActionStatus>>>,
-
+    bridge_committee_summary: Arc<Mutex<Option<BridgeCommitteeSummary>>>,
+    is_paused: Arc<Mutex<Option<IsBridgePaused>>>,
     requested_transactions_tx: tokio::sync::broadcast::Sender<TransactionDigest>,
 }
 
@@ -48,7 +52,7 @@ impl SuiMockClient {
     pub fn default() -> Self {
         Self {
             chain_identifier: "".to_string(),
-            latest_checkpoint_sequence_number: 0,
+            latest_checkpoint_sequence_number: Arc::new(AtomicU64::new(0)),
             events: Default::default(),
             past_event_query_params: Default::default(),
             events_by_tx_digest: Default::default(),
@@ -56,6 +60,8 @@ impl SuiMockClient {
             wildcard_transaction_response: Default::default(),
             get_object_info: Default::default(),
             onchain_status: Default::default(),
+            bridge_committee_summary: Default::default(),
+            is_paused: Default::default(),
             requested_transactions_tx: tokio::sync::broadcast::channel(10000).0,
         }
     }
@@ -105,11 +111,27 @@ impl SuiMockClient {
             .insert((action.chain_id() as u8, action.seq_number()), status);
     }
 
+    pub fn set_bridge_committee(&self, committee: BridgeCommitteeSummary) {
+        self.bridge_committee_summary
+            .lock()
+            .unwrap()
+            .replace(committee);
+    }
+
+    pub fn set_is_bridge_paused(&self, value: IsBridgePaused) {
+        self.is_paused.lock().unwrap().replace(value);
+    }
+
     pub fn set_wildcard_transaction_response(
         &self,
         response: BridgeResult<SuiTransactionBlockResponse>,
     ) {
         *self.wildcard_transaction_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_latest_checkpoint_sequence_number(&self, value: u64) {
+        self.latest_checkpoint_sequence_number
+            .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn add_gas_object_info(&self, gas_coin: GasCoin, object_ref: ObjectRef, owner: Owner) {
@@ -180,7 +202,9 @@ impl SuiClientInner for SuiMockClient {
     }
 
     async fn get_latest_checkpoint_sequence_number(&self) -> Result<u64, Self::Error> {
-        Ok(self.latest_checkpoint_sequence_number)
+        Ok(self
+            .latest_checkpoint_sequence_number
+            .load(std::sync::atomic::Ordering::Relaxed))
     }
 
     async fn get_mutable_bridge_object_arg(&self) -> Result<ObjectArg, Self::Error> {
@@ -198,9 +222,14 @@ impl SuiClientInner for SuiMockClient {
             chain_id: 0,
             sequence_nums: vec![],
             bridge_records_id: ObjectID::random(),
-            is_frozen: false,
+            is_frozen: self.is_paused.lock().unwrap().unwrap_or_default(),
             limiter: Default::default(),
-            committee: Default::default(),
+            committee: self
+                .bridge_committee_summary
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_default(),
             treasury: Default::default(),
         })
     }

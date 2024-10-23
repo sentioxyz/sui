@@ -11,7 +11,7 @@
  * To update run 'ampli pull web'
  *
  * Required dependencies: @amplitude/analytics-browser@^1.3.0
- * Tracking Plan Version: 3
+ * Tracking Plan Version: 6
  * Build: 1.0.0
  * Runtime: browser:typescript-ampli-v2
  *
@@ -34,10 +34,10 @@ export const ApiKey: Record<Environment, string> = {
  */
 export const DefaultConfiguration: BrowserOptions = {
 	plan: {
-		version: '3',
+		version: '6',
 		branch: 'main',
 		source: 'web',
-		versionId: 'e417ca76-bc93-4e57-b900-d5cd7c4b033c',
+		versionId: '77fa44dc-250a-4e7e-8b74-164834834066',
 	},
 	...{
 		ingestionMetadata: {
@@ -121,6 +121,10 @@ export interface AddedAccountsProperties {
 	numberOfAccounts: number;
 }
 
+export interface BypassedScamWarningProperties {
+	hostname: string;
+}
+
 export interface ClickedBullsharkQuestsCtaProperties {
 	/**
 	 * The flow the user came from.
@@ -133,6 +137,16 @@ export interface ClickedCollectibleCardProperties {
 	 * The object type of a collectible.
 	 */
 	collectibleType: string;
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Type | number |
+	 */
+	count?: number;
+	/**
+	 * Whether or not a collectible card represents a Kiosk.
+	 */
+	isKiosk?: boolean;
 	/**
 	 * The ID of an object on Sui.
 	 */
@@ -178,9 +192,9 @@ export interface ClickedSocialSignInButtonProperties {
 	 *
 	 * | Rule | Value |
 	 * |---|---|
-	 * | Enum Values | Microsoft, Facebook, Google, Twitch, Kakao |
+	 * | Enum Values | Microsoft, Facebook, Google, Twitch, Kakao, Apple |
 	 */
-	signInProvider: 'Microsoft' | 'Facebook' | 'Google' | 'Twitch' | 'Kakao';
+	signInProvider: 'Microsoft' | 'Facebook' | 'Google' | 'Twitch' | 'Kakao' | 'Apple';
 	/**
 	 * The flow the user came from.
 	 */
@@ -208,13 +222,13 @@ export interface ClickedSwapCoinProperties {
 	 */
 	sourceFlow: string;
 	/**
-	 * The total balance in SUI of the selected coin that the user has.
+	 * The total balance of the selected coin that the user has.
 	 *
 	 * | Rule | Value |
 	 * |---|---|
 	 * | Type | number |
 	 */
-	totalBalance: number;
+	totalBalance?: number;
 }
 
 export interface ClickedUnstakeSuiProperties {
@@ -232,6 +246,15 @@ export interface ClickedUnstakeSuiProperties {
 	validatorAddress: string;
 }
 
+export interface ClickedUsdcPromoBannerProperties {
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Item Type | string |
+	 */
+	wUsdcInAccount: string[];
+}
+
 export interface ConnectedHardwareWalletProperties {
 	/**
 	 * The type of hardware wallet that was connected to.
@@ -241,6 +264,21 @@ export interface ConnectedHardwareWalletProperties {
 	 * | Enum Values | Ledger |
 	 */
 	hardwareWalletType: 'Ledger';
+}
+
+export interface CreatedNewWalletProperties {
+	/**
+	 * Whether or not the keypair was imported during onboarding.
+	 */
+	imported?: boolean;
+	/**
+	 * The type of account provider used during onboarding.
+	 *
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Enum Values | mnemonic, keypair, zklogin |
+	 */
+	onboardingProvider: 'mnemonic' | 'keypair' | 'zklogin';
 }
 
 export interface DisconnectedApplicationProperties {
@@ -273,6 +311,10 @@ export interface ImportedExistingAccountProperties {
 	sourceFlow: string;
 }
 
+export interface InteractedWithMaliciousDomainProperties {
+	hostname: string;
+}
+
 export interface OpenedApplicationProperties {
 	/**
 	 * The name of the application being visited.
@@ -292,6 +334,26 @@ export interface PinnedCoinProperties {
 	 * The type of a coin.
 	 */
 	coinType: string;
+}
+
+export interface ReceivedOnrampProvidersDataProperties {
+	countryCode?: string;
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Item Type | string |
+	 */
+	providerNames: string[];
+	region?: string;
+}
+
+export interface ReceivedOnrampProvidersDataFailedProperties {
+	countryCode: string;
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
+	region?: string;
 }
 
 export interface RespondedToConnectionRequestProperties {
@@ -322,6 +384,12 @@ export interface RespondedToTransactionRequestProperties {
 	 * Whether or not users received a failure warning when signing a transaction.
 	 */
 	receivedFailureWarning: boolean;
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Enum Values | sign, sign-and-execute |
+	 */
+	type: 'sign' | 'sign-and-execute';
 }
 
 export interface SelectedCoinProperties {
@@ -330,13 +398,17 @@ export interface SelectedCoinProperties {
 	 */
 	coinType: string;
 	/**
-	 * The total balance in SUI of the selected coin that the user has.
+	 * The flow the user came from.
+	 */
+	sourceFlow: string;
+	/**
+	 * The total balance of the selected coin that the user has.
 	 *
 	 * | Rule | Value |
 	 * |---|---|
 	 * | Type | number |
 	 */
-	totalBalance: number;
+	totalBalance?: number;
 }
 
 export interface SelectedValidatorProperties {
@@ -358,6 +430,13 @@ export interface SelectedValidatorProperties {
 	validatorName: string;
 }
 
+export interface SentCoinFailedProperties {
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
+}
+
 export interface SentCoinsProperties {
 	coinType: string;
 }
@@ -369,7 +448,50 @@ export interface SentCollectibleProperties {
 	objectId: string;
 }
 
+export interface SentCollectibleFailedProperties {
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
+	/**
+	 * The ID of an object on Sui.
+	 */
+	objectId: string;
+}
+
+export interface SignedTransactionBlockFailedProperties {
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Enum Values | sign, signAndExecute |
+	 */
+	action: 'sign' | 'signAndExecute';
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
+}
+
 export interface StakedSuiProperties {
+	/**
+	 * The amount of SUI staked.
+	 *
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Type | number |
+	 */
+	stakedAmount: number;
+	/**
+	 * The address of the selected validator.
+	 */
+	validatorAddress: string;
+}
+
+export interface StakedSuiFailedProperties {
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
 	/**
 	 * The amount of SUI staked.
 	 *
@@ -394,13 +516,36 @@ export interface SwappedCoinProperties {
 	fromCoinType: string;
 	toCoinType: string;
 	/**
-	 * The total balance in SUI of the selected coin that the user has.
+	 * The total balance of the selected coin that the user has.
 	 *
 	 * | Rule | Value |
 	 * |---|---|
 	 * | Type | number |
 	 */
-	totalBalance: number;
+	totalBalance?: number;
+}
+
+export interface SwappedCoinFailedProperties {
+	/**
+	 * A message associated with an error event.
+	 */
+	errorMessage: string;
+	/**
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Type | number |
+	 */
+	estimatedReturnBalance: number;
+	fromCoinType: string;
+	toCoinType: string;
+	/**
+	 * The total balance of the selected coin that the user has.
+	 *
+	 * | Rule | Value |
+	 * |---|---|
+	 * | Type | number |
+	 */
+	totalBalance?: number;
 }
 
 export interface SwitchedAccountProperties {
@@ -429,10 +574,13 @@ export interface UnstakedSuiProperties {
 }
 
 export interface VisitedFiatOnRampProperties {
+	countryCode?: string;
+	isBestRate?: boolean;
 	/**
 	 * The name of the fiat on-ramp provider.
 	 */
 	providerName: string;
+	region?: string;
 }
 
 export class Identify implements BaseEvent {
@@ -447,6 +595,14 @@ export class AddedAccounts implements BaseEvent {
 	event_type = 'added accounts';
 
 	constructor(public event_properties: AddedAccountsProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class BypassedScamWarning implements BaseEvent {
+	event_type = 'bypassed scam warning';
+
+	constructor(public event_properties: BypassedScamWarningProperties) {
 		this.event_properties = event_properties;
 	}
 }
@@ -543,6 +699,14 @@ export class ClickedUnstakeSui implements BaseEvent {
 	}
 }
 
+export class ClickedUsdcPromoBanner implements BaseEvent {
+	event_type = 'clicked usdc promo banner';
+
+	constructor(public event_properties: ClickedUsdcPromoBannerProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
 export class ConnectedHardwareWallet implements BaseEvent {
 	event_type = 'connected hardware wallet';
 
@@ -553,6 +717,10 @@ export class ConnectedHardwareWallet implements BaseEvent {
 
 export class CreatedNewWallet implements BaseEvent {
 	event_type = 'created new wallet';
+
+	constructor(public event_properties: CreatedNewWalletProperties) {
+		this.event_properties = event_properties;
+	}
 }
 
 export class DisconnectedApplication implements BaseEvent {
@@ -567,6 +735,14 @@ export class ImportedExistingAccount implements BaseEvent {
 	event_type = 'imported existing account';
 
 	constructor(public event_properties: ImportedExistingAccountProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class InteractedWithMaliciousDomain implements BaseEvent {
+	event_type = 'interacted with malicious domain';
+
+	constructor(public event_properties: InteractedWithMaliciousDomainProperties) {
 		this.event_properties = event_properties;
 	}
 }
@@ -595,6 +771,22 @@ export class PinnedCoin implements BaseEvent {
 	event_type = 'pinned coin';
 
 	constructor(public event_properties: PinnedCoinProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class ReceivedOnrampProvidersData implements BaseEvent {
+	event_type = 'received onramp providers data';
+
+	constructor(public event_properties: ReceivedOnrampProvidersDataProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class ReceivedOnrampProvidersDataFailed implements BaseEvent {
+	event_type = 'Received onramp providers data (failed)';
+
+	constructor(public event_properties: ReceivedOnrampProvidersDataFailedProperties) {
 		this.event_properties = event_properties;
 	}
 }
@@ -631,6 +823,14 @@ export class SelectedValidator implements BaseEvent {
 	}
 }
 
+export class SentCoinFailed implements BaseEvent {
+	event_type = 'sent coin failed';
+
+	constructor(public event_properties: SentCoinFailedProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
 export class SentCoins implements BaseEvent {
 	event_type = 'sent coins';
 
@@ -647,6 +847,22 @@ export class SentCollectible implements BaseEvent {
 	}
 }
 
+export class SentCollectibleFailed implements BaseEvent {
+	event_type = 'sent collectible (failed)';
+
+	constructor(public event_properties: SentCollectibleFailedProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class SignedTransactionBlockFailed implements BaseEvent {
+	event_type = 'signed transaction block failed';
+
+	constructor(public event_properties: SignedTransactionBlockFailedProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
 export class StakedSui implements BaseEvent {
 	event_type = 'staked SUI';
 
@@ -655,10 +871,26 @@ export class StakedSui implements BaseEvent {
 	}
 }
 
+export class StakedSuiFailed implements BaseEvent {
+	event_type = 'staked SUI (failed)';
+
+	constructor(public event_properties: StakedSuiFailedProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
 export class SwappedCoin implements BaseEvent {
 	event_type = 'swapped coin';
 
 	constructor(public event_properties: SwappedCoinProperties) {
+		this.event_properties = event_properties;
+	}
+}
+
+export class SwappedCoinFailed implements BaseEvent {
+	event_type = 'swapped coin (failed)';
+
+	constructor(public event_properties: SwappedCoinFailedProperties) {
 		this.event_properties = event_properties;
 	}
 }
@@ -742,7 +974,7 @@ export class Ampli {
     this.disabled = options.disabled ?? false;
 
     if (this.amplitude) {
-      console.warn('WARNING: Ampli is already initialized. Ampli.load() should be called once at application startup.');
+      console.warn('WARNING: Ampli is already intialized. Ampli.load() should be called once at application startup.');
       return getVoidPromiseResult();
     }
 
@@ -844,11 +1076,28 @@ export class Ampli {
   }
 
   /**
+   * bypassed scam warning
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/bypassed%20scam%20warning)
+   *
+   * Event to track when users bypass a scam warning within the wallet
+   *
+   * @param properties The event's properties (e.g. hostname)
+   * @param options Amplitude event options.
+   */
+  bypassedScamWarning(
+    properties: BypassedScamWarningProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new BypassedScamWarning(properties), options);
+  }
+
+  /**
    * clicked bullshark quests cta
    *
    * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/clicked%20bullshark%20quests%20cta)
    *
-   * When users click the call-to-action for the Bullshark Quests interstitial/banner.
+   * When users click the call-to-action for the interstitial/banner.
    *
    * @param properties The event's properties (e.g. sourceFlow)
    * @param options Amplitude event options.
@@ -1071,6 +1320,23 @@ export class Ampli {
   }
 
   /**
+   * clicked usdc promo banner
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/clicked%20usdc%20promo%20banner)
+   *
+   * Event has no description in tracking plan.
+   *
+   * @param properties The event's properties (e.g. wUsdcInAccount)
+   * @param options Amplitude event options.
+   */
+  clickedUsdcPromoBanner(
+    properties: ClickedUsdcPromoBannerProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new ClickedUsdcPromoBanner(properties), options);
+  }
+
+  /**
    * connected hardware wallet
    *
    * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/connected%20hardware%20wallet)
@@ -1098,12 +1364,14 @@ export class Ampli {
    *
    * Owner: Jon Shek
    *
+   * @param properties The event's properties (e.g. imported)
    * @param options Amplitude event options.
    */
   createdNewWallet(
+    properties: CreatedNewWalletProperties,
     options?: EventOptions,
   ) {
-    return this.track(new CreatedNewWallet(), options);
+    return this.track(new CreatedNewWallet(properties), options);
   }
 
   /**
@@ -1142,6 +1410,23 @@ export class Ampli {
     options?: EventOptions,
   ) {
     return this.track(new ImportedExistingAccount(properties), options);
+  }
+
+  /**
+   * interacted with malicious domain
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/interacted%20with%20malicious%20domain)
+   *
+   * Event to track when a user interacts with a malicious domain and is shown the malicious domain warning overlay.
+   *
+   * @param properties The event's properties (e.g. hostname)
+   * @param options Amplitude event options.
+   */
+  interactedWithMaliciousDomain(
+    properties: InteractedWithMaliciousDomainProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new InteractedWithMaliciousDomain(properties), options);
   }
 
   /**
@@ -1216,6 +1501,40 @@ export class Ampli {
     options?: EventOptions,
   ) {
     return this.track(new PinnedCoin(properties), options);
+  }
+
+  /**
+   * received onramp providers data
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/received%20onramp%20providers%20data)
+   *
+   * Event to track when data from onramp providers is received
+   *
+   * @param properties The event's properties (e.g. countryCode)
+   * @param options Amplitude event options.
+   */
+  receivedOnrampProvidersData(
+    properties: ReceivedOnrampProvidersDataProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new ReceivedOnrampProvidersData(properties), options);
+  }
+
+  /**
+   * Received onramp providers data (failed)
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/Received%20onramp%20providers%20data%20(failed))
+   *
+   * Event to track when data from onramp providers is received
+   *
+   * @param properties The event's properties (e.g. countryCode)
+   * @param options Amplitude event options.
+   */
+  receivedOnrampProvidersDataFailed(
+    properties: ReceivedOnrampProvidersDataFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new ReceivedOnrampProvidersDataFailed(properties), options);
   }
 
   /**
@@ -1295,6 +1614,23 @@ export class Ampli {
   }
 
   /**
+   * sent coin failed
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/sent%20coin%20failed)
+   *
+   * Event to track errors encountered while sending coins
+   *
+   * @param properties The event's properties (e.g. errorMessage)
+   * @param options Amplitude event options.
+   */
+  sentCoinFailed(
+    properties: SentCoinFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new SentCoinFailed(properties), options);
+  }
+
+  /**
    * sent coins
    *
    * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/sent%20coins)
@@ -1331,6 +1667,40 @@ export class Ampli {
   }
 
   /**
+   * sent collectible (failed)
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/sent%20collectible%20(failed))
+   *
+   * Event has no description in tracking plan.
+   *
+   * @param properties The event's properties (e.g. errorMessage)
+   * @param options Amplitude event options.
+   */
+  sentCollectibleFailed(
+    properties: SentCollectibleFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new SentCollectibleFailed(properties), options);
+  }
+
+  /**
+   * signed transaction block failed
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/signed%20transaction%20block%20failed)
+   *
+   * Event to track errors encountered while signing a transaction block
+   *
+   * @param properties The event's properties (e.g. action)
+   * @param options Amplitude event options.
+   */
+  signedTransactionBlockFailed(
+    properties: SignedTransactionBlockFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new SignedTransactionBlockFailed(properties), options);
+  }
+
+  /**
    * staked SUI
    *
    * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/staked%20SUI)
@@ -1350,6 +1720,23 @@ export class Ampli {
   }
 
   /**
+   * staked SUI (failed)
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/staked%20SUI%20(failed))
+   *
+   * Event fired when a user attempt to native stake SUI results in a failure.
+   *
+   * @param properties The event's properties (e.g. errorMessage)
+   * @param options Amplitude event options.
+   */
+  stakedSuiFailed(
+    properties: StakedSuiFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new StakedSuiFailed(properties), options);
+  }
+
+  /**
    * swapped coin
    *
    * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/swapped%20coin)
@@ -1364,6 +1751,23 @@ export class Ampli {
     options?: EventOptions,
   ) {
     return this.track(new SwappedCoin(properties), options);
+  }
+
+  /**
+   * swapped coin (failed)
+   *
+   * [View in Tracking Plan](https://data.amplitude.com/mystenlabs/Sui%20Wallet/events/main/latest/swapped%20coin%20(failed))
+   *
+   * Event has no description in tracking plan.
+   *
+   * @param properties The event's properties (e.g. errorMessage)
+   * @param options Amplitude event options.
+   */
+  swappedCoinFailed(
+    properties: SwappedCoinFailedProperties,
+    options?: EventOptions,
+  ) {
+    return this.track(new SwappedCoinFailed(properties), options);
   }
 
   /**
@@ -1468,7 +1872,7 @@ export class Ampli {
    *
    * Owner: Jon Shek
    *
-   * @param properties The event's properties (e.g. providerName)
+   * @param properties The event's properties (e.g. countryCode)
    * @param options Amplitude event options.
    */
   visitedFiatOnRamp(

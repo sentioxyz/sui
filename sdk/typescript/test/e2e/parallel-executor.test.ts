@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { afterEach } from 'node:test';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, Mock, vi } from 'vitest';
 
 import { bcs } from '../../src/bcs';
@@ -10,31 +11,41 @@ import { ParallelTransactionExecutor, Transaction } from '../../src/transactions
 import { setup, TestToolbox } from './utils/setup';
 
 let toolbox: TestToolbox;
-beforeAll(async () => {
-	toolbox = await setup();
+let executor: ParallelTransactionExecutor;
 
-	vi.spyOn(toolbox.client, 'multiGetObjects');
-	vi.spyOn(toolbox.client, 'getCoins');
-	vi.spyOn(toolbox.client, 'executeTransactionBlock');
-});
+describe('ParallelTransactionExecutor', { retry: 3 }, () => {
+	beforeAll(async () => {
+		toolbox = await setup();
 
-afterAll(() => {
-	vi.restoreAllMocks();
-});
+		// Creates bear package
+		await toolbox.mintNft();
 
-describe('ParallelTransactionExecutor', () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it('Executes multiple transactions in parallel', async () => {
-		const executor = new ParallelTransactionExecutor({
+		executor = new ParallelTransactionExecutor({
 			client: toolbox.client,
 			signer: toolbox.keypair,
 			maxPoolSize: 3,
 			coinBatchSize: 2,
 		});
 
+		vi.spyOn(toolbox.client, 'multiGetObjects');
+		vi.spyOn(toolbox.client, 'getCoins');
+		vi.spyOn(toolbox.client, 'executeTransactionBlock');
+	});
+
+	afterEach(async () => {
+		await executor.waitForLastTransaction();
+	});
+
+	beforeEach(async () => {
+		await executor.resetCache();
+		vi.clearAllMocks();
+	});
+
+	afterAll(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('Executes multiple transactions in parallel', async () => {
 		let concurrentRequests = 0;
 		let maxConcurrentRequests = 0;
 		let totalTransactions = 0;
@@ -53,11 +64,13 @@ describe('ParallelTransactionExecutor', () => {
 			});
 		});
 
-		const txbs = Array.from({ length: 10 }, () => {
+		const txbs = [];
+
+		for (let i = 0; i < 10; i++) {
 			const txb = new Transaction();
-			txb.transferObjects([txb.splitCoins(txb.gas, [1])[0]], toolbox.address());
-			return txb;
-		});
+			txb.transferObjects([await toolbox.mintNft()], toolbox.address());
+			txbs.push(txb);
+		}
 
 		const results = await Promise.all(txbs.map((txb) => executor.executeTransaction(txb)));
 
@@ -70,13 +83,6 @@ describe('ParallelTransactionExecutor', () => {
 	});
 
 	it('handles gas coin transfers', async () => {
-		const executor = new ParallelTransactionExecutor({
-			client: toolbox.client,
-			signer: toolbox.keypair,
-			maxPoolSize: 3,
-			coinBatchSize: 2,
-		});
-
 		const receiver = new Ed25519Keypair();
 
 		const txbs = Array.from({ length: 10 }, () => {
@@ -100,13 +106,6 @@ describe('ParallelTransactionExecutor', () => {
 	});
 
 	it('handles errors', async () => {
-		const executor = new ParallelTransactionExecutor({
-			client: toolbox.client,
-			signer: toolbox.keypair,
-			maxPoolSize: 3,
-			coinBatchSize: 2,
-		});
-
 		const txbs = Array.from({ length: 10 }, (_, i) => {
 			const txb = new Transaction();
 
@@ -136,13 +135,6 @@ describe('ParallelTransactionExecutor', () => {
 	});
 
 	it('handles transactions that use the same objects', async () => {
-		const executor = new ParallelTransactionExecutor({
-			client: toolbox.client,
-			signer: toolbox.keypair,
-			maxPoolSize: 3,
-			coinBatchSize: 2,
-		});
-
 		const newCoins = await Promise.all(
 			new Array(3).fill(null).map(async () => {
 				const txb = new Transaction();
@@ -161,7 +153,7 @@ describe('ParallelTransactionExecutor', () => {
 		);
 
 		const txbs = newCoins.flatMap((newCoinId) => {
-			expect(toolbox.client.getCoins).toHaveBeenCalledTimes(1);
+			expect(toolbox.client.getCoins).toHaveBeenCalledTimes(0);
 			const txb2 = new Transaction();
 			txb2.transferObjects([newCoinId], toolbox.address());
 			const txb3 = new Transaction();

@@ -1,4 +1,4 @@
-//# init --edition 2024.alpha
+//# init --edition 2024.beta
 
 //# publish
 module 0x42::m {
@@ -18,7 +18,7 @@ module 0x42::m {
 }
 
 //# run
-module 0x42::main {
+module 0x43::main {
 
     fun main() {
         assert!(0x42::m::test() == 0, 1);

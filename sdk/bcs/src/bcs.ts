@@ -167,7 +167,7 @@ export const bcs = {
 			...options,
 			validate: (value) => {
 				options?.validate?.(value);
-				if (!('length' in value)) {
+				if (!value || typeof value !== 'object' || !('length' in value)) {
 					throw new TypeError(`Expected array, found ${typeof value}`);
 				}
 				if (value.length !== size) {
@@ -220,7 +220,7 @@ export const bcs = {
 			...options,
 			validate: (value) => {
 				options?.validate?.(value);
-				if (!('length' in value)) {
+				if (!value || typeof value !== 'object' || !('length' in value)) {
 					throw new TypeError(`Expected array, found ${typeof value}`);
 				}
 				if (value.length !== size) {
@@ -252,7 +252,7 @@ export const bcs = {
 					return { Some: value };
 				},
 				output: (value) => {
-					if ('Some' in value) {
+					if (value.$kind === 'Some') {
 						return value.Some;
 					}
 
@@ -291,7 +291,7 @@ export const bcs = {
 			...options,
 			validate: (value) => {
 				options?.validate?.(value);
-				if (!('length' in value)) {
+				if (!value || typeof value !== 'object' || !('length' in value)) {
 					throw new TypeError(`Expected array, found ${typeof value}`);
 				}
 			},
@@ -481,10 +481,17 @@ export const bcs = {
 			name,
 			read: (reader) => {
 				const index = reader.readULEB();
-				const [name, type] = canonicalOrder[index];
+
+				const enumEntry = canonicalOrder[index];
+				if (!enumEntry) {
+					throw new TypeError(`Unknown value ${index} for enum ${name}`);
+				}
+
+				const [kind, type] = enumEntry;
+
 				return {
-					[name]: type?.read(reader) ?? true,
-					$kind: name,
+					[kind]: type?.read(reader) ?? true,
+					$kind: kind,
 				} as never;
 			},
 			write: (value, writer) => {

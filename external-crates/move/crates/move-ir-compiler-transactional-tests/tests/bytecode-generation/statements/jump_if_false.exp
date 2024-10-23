@@ -1,8 +1,9 @@
 processed 4 tasks
 
-task 0 'print-bytecode'. lines 1-20:
+task 0, lines 1-20:
+//# print-bytecode
 // Move bytecode v6
-module 1.m {
+module 6.m {
 
 
 
@@ -29,9 +30,10 @@ B3:
 }
 }
 
-task 1 'print-bytecode'. lines 22-36:
+task 1, lines 22-36:
+//# print-bytecode
 // Move bytecode v6
-module 2.m {
+module 7.m {
 
 
 
@@ -54,9 +56,10 @@ B4:
 }
 }
 
-task 2 'print-bytecode'. lines 38-48:
+task 2, lines 38-48:
+//# print-bytecode
 // Move bytecode v6
-module 3.m {
+module 8.m {
 
 
 
@@ -73,9 +76,10 @@ B2:
 }
 }
 
-task 3 'print-bytecode'. lines 50-63:
+task 3, lines 50-63:
+//# print-bytecode
 // Move bytecode v6
-module 4.m {
+module 9.m {
 
 
 

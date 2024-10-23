@@ -166,6 +166,22 @@ mod tests {
         async fn get_missing_blocks(&self) -> Result<BTreeSet<BlockRef>, CoreError> {
             todo!()
         }
+
+        fn set_subscriber_exists(&self, _exists: bool) -> Result<(), CoreError> {
+            todo!()
+        }
+
+        fn set_propagation_delay(&self, _delay: Round) -> Result<(), CoreError> {
+            todo!()
+        }
+
+        fn set_last_known_proposed_round(&self, _round: Round) -> Result<(), CoreError> {
+            todo!()
+        }
+
+        fn highest_received_rounds(&self) -> Vec<Round> {
+            todo!()
+        }
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

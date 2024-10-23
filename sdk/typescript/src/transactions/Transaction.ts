@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SerializedBcs } from '@mysten/bcs';
-import { fromB64, isSerializedBcs } from '@mysten/bcs';
-import type { Input } from 'valibot';
+import { fromBase64, isSerializedBcs } from '@mysten/bcs';
+import type { InferInput } from 'valibot';
 import { is, parse } from 'valibot';
 
 import type { SuiClient } from '../client/index.js';
@@ -22,13 +22,14 @@ import type {
 	TransactionPlugin,
 } from './json-rpc-resolver.js';
 import { resolveTransactionData } from './json-rpc-resolver.js';
+import { createObjectMethods } from './object.js';
 import { createPure } from './pure.js';
 import { TransactionDataBuilder } from './TransactionData.js';
 import { getIdFromCallArg } from './utils.js';
 
 export type TransactionObjectArgument =
-	| Exclude<Input<typeof Argument>, { Input: unknown; type?: 'pure' }>
-	| ((tx: Transaction) => Exclude<Input<typeof Argument>, { Input: unknown; type?: 'pure' }>);
+	| Exclude<InferInput<typeof Argument>, { Input: unknown; type?: 'pure' }>
+	| ((tx: Transaction) => Exclude<InferInput<typeof Argument>, { Input: unknown; type?: 'pure' }>);
 
 export type TransactionResult = Extract<Argument, { Result: unknown }> &
 	Extract<Argument, { NestedResult: unknown }>[];
@@ -86,7 +87,7 @@ function createTransactionResult(index: number) {
 	}) as TransactionResult;
 }
 
-const TRANSACTION_BRAND = Symbol.for('@mysten/transaction');
+const TRANSACTION_BRAND = Symbol.for('@mysten/transaction') as never;
 
 interface SignOptions extends BuildTransactionOptions {
 	signer: Signer;
@@ -98,12 +99,41 @@ export function isTransaction(obj: unknown): obj is Transaction {
 
 export type TransactionObjectInput = string | CallArg | TransactionObjectArgument;
 
+interface TransactionPluginRegistry {
+	// eslint-disable-next-line @typescript-eslint/ban-types
+	buildPlugins: Map<string | Function, TransactionPlugin>;
+	// eslint-disable-next-line @typescript-eslint/ban-types
+	serializationPlugins: Map<string | Function, TransactionPlugin>;
+}
+
+const modulePluginRegistry: TransactionPluginRegistry = {
+	buildPlugins: new Map(),
+	serializationPlugins: new Map(),
+};
+
+const TRANSACTION_REGISTRY_KEY = Symbol.for('@mysten/transaction/registry');
+function getGlobalPluginRegistry() {
+	try {
+		const target = globalThis as {
+			[TRANSACTION_REGISTRY_KEY]?: TransactionPluginRegistry;
+		};
+
+		if (!target[TRANSACTION_REGISTRY_KEY]) {
+			target[TRANSACTION_REGISTRY_KEY] = modulePluginRegistry;
+		}
+
+		return target[TRANSACTION_REGISTRY_KEY];
+	} catch (e) {
+		return modulePluginRegistry;
+	}
+}
+
 /**
  * Transaction Builder
  */
 export class Transaction {
-	#serializationPlugins: TransactionPlugin[] = [];
-	#buildPlugins: TransactionPlugin[] = [];
+	#serializationPlugins: TransactionPlugin[];
+	#buildPlugins: TransactionPlugin[];
 	#intentResolvers = new Map<string, TransactionPlugin>();
 
 	/**
@@ -114,7 +144,7 @@ export class Transaction {
 		const tx = new Transaction();
 
 		tx.#data = TransactionDataBuilder.fromKindBytes(
-			typeof serialized === 'string' ? fromB64(serialized) : serialized,
+			typeof serialized === 'string' ? fromBase64(serialized) : serialized,
 		);
 
 		return tx;
@@ -133,13 +163,47 @@ export class Transaction {
 			newTransaction.#data = new TransactionDataBuilder(transaction.getData());
 		} else if (typeof transaction !== 'string' || !transaction.startsWith('{')) {
 			newTransaction.#data = TransactionDataBuilder.fromBytes(
-				typeof transaction === 'string' ? fromB64(transaction) : transaction,
+				typeof transaction === 'string' ? fromBase64(transaction) : transaction,
 			);
 		} else {
 			newTransaction.#data = TransactionDataBuilder.restore(JSON.parse(transaction));
 		}
 
 		return newTransaction;
+	}
+
+	/** @deprecated global plugins should be registered with a name */
+	static registerGlobalSerializationPlugin(step: TransactionPlugin): void;
+	static registerGlobalSerializationPlugin(name: string, step: TransactionPlugin): void;
+	static registerGlobalSerializationPlugin(
+		stepOrStep: TransactionPlugin | string,
+		step?: TransactionPlugin,
+	) {
+		getGlobalPluginRegistry().serializationPlugins.set(
+			stepOrStep,
+			step ?? (stepOrStep as TransactionPlugin),
+		);
+	}
+
+	static unregisterGlobalSerializationPlugin(name: string) {
+		getGlobalPluginRegistry().serializationPlugins.delete(name);
+	}
+
+	/** @deprecated global plugins should be registered with a name */
+	static registerGlobalBuildPlugin(step: TransactionPlugin): void;
+	static registerGlobalBuildPlugin(name: string, step: TransactionPlugin): void;
+	static registerGlobalBuildPlugin(
+		stepOrStep: TransactionPlugin | string,
+		step?: TransactionPlugin,
+	) {
+		getGlobalPluginRegistry().buildPlugins.set(
+			stepOrStep,
+			step ?? (stepOrStep as TransactionPlugin),
+		);
+	}
+
+	static unregisterGlobalBuildPlugin(name: string) {
+		getGlobalPluginRegistry().buildPlugins.delete(name);
 	}
 
 	addSerializationPlugin(step: TransactionPlugin) {
@@ -170,7 +234,7 @@ export class Transaction {
 			this.#data.sender = sender;
 		}
 	}
-	setExpiration(expiration?: Input<typeof TransactionExpiration> | null) {
+	setExpiration(expiration?: InferInput<typeof TransactionExpiration> | null) {
 		this.#data.expiration = expiration ? parse(TransactionExpiration, expiration) : null;
 	}
 	setGasPrice(price: number | bigint) {
@@ -179,6 +243,13 @@ export class Transaction {
 	setGasBudget(budget: number | bigint) {
 		this.#data.gasConfig.budget = String(budget);
 	}
+
+	setGasBudgetIfNotSet(budget: number | bigint) {
+		if (this.#data.gasData.budget == null) {
+			this.#data.gasConfig.budget = String(budget);
+		}
+	}
+
 	setGasOwner(owner: string) {
 		this.#data.gasConfig.owner = owner;
 	}
@@ -205,10 +276,10 @@ export class Transaction {
 	}
 
 	// Temporary workaround for the wallet interface accidentally serializing transactions via postMessage
-	get pure(): ReturnType<typeof createPure> {
+	get pure(): ReturnType<typeof createPure<Argument>> {
 		Object.defineProperty(this, 'pure', {
 			enumerable: false,
-			value: createPure((value): Argument => {
+			value: createPure<Argument>((value): Argument => {
 				if (isSerializedBcs(value)) {
 					return this.#data.addInput('pure', {
 						$kind: 'Pure',
@@ -224,8 +295,8 @@ export class Transaction {
 					is(NormalizedCallArg, value)
 						? parse(NormalizedCallArg, value)
 						: value instanceof Uint8Array
-						? Inputs.Pure(value)
-						: { $kind: 'UnresolvedPure', UnresolvedPure: { value } },
+							? Inputs.Pure(value)
+							: { $kind: 'UnresolvedPure', UnresolvedPure: { value } },
 				);
 			}),
 		});
@@ -234,7 +305,10 @@ export class Transaction {
 	}
 
 	constructor() {
+		const globalPlugins = getGlobalPluginRegistry();
 		this.#data = new TransactionDataBuilder();
+		this.#buildPlugins = [...globalPlugins.buildPlugins.values()];
+		this.#serializationPlugins = [...globalPlugins.serializationPlugins.values()];
 	}
 
 	/** Returns an argument for the gas coin, to be used in a transaction. */
@@ -245,37 +319,43 @@ export class Transaction {
 	/**
 	 * Add a new object input to the transaction.
 	 */
-	object(value: TransactionObjectInput): { $kind: 'Input'; Input: number; type?: 'object' } {
-		if (typeof value === 'function') {
-			return this.object(value(this));
-		}
+	object = createObjectMethods(
+		(value: TransactionObjectInput): { $kind: 'Input'; Input: number; type?: 'object' } => {
+			if (typeof value === 'function') {
+				return this.object(value(this));
+			}
 
-		if (typeof value === 'object' && is(Argument, value)) {
-			return value as { $kind: 'Input'; Input: number; type?: 'object' };
-		}
+			if (typeof value === 'object' && is(Argument, value)) {
+				return value as { $kind: 'Input'; Input: number; type?: 'object' };
+			}
 
-		const id = getIdFromCallArg(value);
+			const id = getIdFromCallArg(value);
 
-		const inserted = this.#data.inputs.find((i) => id === getIdFromCallArg(i));
+			const inserted = this.#data.inputs.find((i) => id === getIdFromCallArg(i));
 
-		// Upgrade shared object inputs to mutable if needed:
-		if (inserted?.Object?.SharedObject && typeof value === 'object' && value.Object?.SharedObject) {
-			inserted.Object.SharedObject.mutable =
-				inserted.Object.SharedObject.mutable || value.Object.SharedObject.mutable;
-		}
+			// Upgrade shared object inputs to mutable if needed:
+			if (
+				inserted?.Object?.SharedObject &&
+				typeof value === 'object' &&
+				value.Object?.SharedObject
+			) {
+				inserted.Object.SharedObject.mutable =
+					inserted.Object.SharedObject.mutable || value.Object.SharedObject.mutable;
+			}
 
-		return inserted
-			? { $kind: 'Input', Input: this.#data.inputs.indexOf(inserted), type: 'object' }
-			: this.#data.addInput(
-					'object',
-					typeof value === 'string'
-						? {
-								$kind: 'UnresolvedObject',
-								UnresolvedObject: { objectId: normalizeSuiAddress(value) },
-						  }
-						: value,
-			  );
-	}
+			return inserted
+				? { $kind: 'Input', Input: this.#data.inputs.indexOf(inserted), type: 'object' }
+				: this.#data.addInput(
+						'object',
+						typeof value === 'string'
+							? {
+									$kind: 'UnresolvedObject',
+									UnresolvedObject: { objectId: normalizeSuiAddress(value) },
+								}
+							: value,
+					);
+		},
+	);
 
 	/**
 	 * Add a new object input to the transaction using the fully-resolved object reference.
@@ -302,13 +382,14 @@ export class Transaction {
 	}
 
 	/** Add a transaction to the transaction */
-	add(command: Command | ((tx: Transaction) => TransactionResult)): TransactionResult {
+	add<T = TransactionResult>(command: Command | ((tx: Transaction) => T)): T {
 		if (typeof command === 'function') {
 			return command(this);
 		}
 
 		const index = this.#data.commands.push(command);
-		return createTransactionResult(index - 1);
+
+		return createTransactionResult(index - 1) as T;
 	}
 
 	#normalizeTransactionArgument(arg: TransactionArgument | SerializedBcs<any>) {
@@ -529,7 +610,7 @@ export class Transaction {
 	async prepareForSerialization(options: SerializeTransactionOptions) {
 		const intents = new Set<string>();
 		for (const command of this.#data.commands) {
-			if (command.$Intent && options.supportedIntents) {
+			if (command.$Intent) {
 				intents.add(command.$Intent.name);
 			}
 		}
