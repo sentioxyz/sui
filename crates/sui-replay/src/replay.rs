@@ -787,7 +787,6 @@ impl LocalExec {
                 local_exec_temporary_store: None,
                 local_exec_effects: effects,
                 local_exec_status: Some(Ok(())),
-                pre_exec_diag: self.diag.clone(),
                 trace_results: None,
             });
         }
@@ -1871,7 +1870,7 @@ impl LocalExec {
                     if !deleted_shared_info_map.contains_key(id) =>
                 {
                     // we already downloaded
-                    Some(ObjectReadResult::new(
+                    resolved_input_objs.push(ObjectReadResult::new(
                         *kind,
                         self.storage
                             .live_objects_store

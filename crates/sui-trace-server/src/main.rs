@@ -37,7 +37,7 @@ async fn main() {
         .route("/call_trace/by_tx_digest/:hash", get(call_trace).with_state(config.clone()))
         .route("/call_trace/v2/by_tx_digest/:hash", get(call_trace).with_state(config.clone()));
 
-    axum::Server::bind(&format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
+    axum_server::Server::bind(format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
         .serve(app.into_make_service())
         .await.unwrap();
 }

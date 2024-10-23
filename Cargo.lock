@@ -15006,6 +15006,7 @@ version = "1.35.2"
 dependencies = [
  "anyhow",
  "axum 0.7.5",
+ "axum-server",
  "mysten-metrics",
  "prometheus",
  "serde",

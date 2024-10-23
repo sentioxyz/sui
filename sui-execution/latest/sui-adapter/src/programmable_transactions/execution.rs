@@ -379,7 +379,6 @@ mod checked {
                         context,
                         &mut argument_updates,
                         &storage_id,
-                        &runtime_id,
                         &function,
                         loaded_type_arguments.clone(),
                         arguments.clone(),

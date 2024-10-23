@@ -12,6 +12,7 @@ use sui_protocol_config::ProtocolConfig;
 use sui_types::base_types::VersionDigest;
 use sui_types::committee::EpochId;
 use sui_types::deny_list_v2::check_coin_deny_list_v2_during_execution;
+use sui_types::digests::ObjectDigest;
 use sui_types::effects::{TransactionEffects, TransactionEvents};
 use sui_types::execution::{
     DynamicallyLoadedObjectMetadata, ExecutionResults, ExecutionResultsV2, SharedInput,

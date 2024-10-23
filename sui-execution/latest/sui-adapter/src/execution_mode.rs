@@ -6,13 +6,10 @@ use crate::type_resolver::TypeTagResolver;
 use move_core_types::language_storage::TypeTag;
 use move_binary_format::call_trace::CallTraces;
 
-use crate::{
-    error::ExecutionError,
-    execution::{ExecutionResult, RawValueType, Value},
-    transaction::Argument,
-    transfer::Receiving,
-    type_resolver::TypeTagResolver,
+use sui_types::{
+    error::ExecutionError, execution::ExecutionResult, transaction::Argument, transfer::Receiving,
 };
+use sui_types::execution::{DevCallTrace, TraceResult};
 
 pub type TransactionIndex = usize;
 
@@ -308,10 +305,6 @@ fn value_to_bytes_and_tag(
     };
     Ok((bytes, type_tag))
 }
-
-pub struct DevCallTrace;
-
-pub type TraceResult = CallTraces;
 
 impl ExecutionMode for DevCallTrace {
     type ArgumentUpdates = Vec<(Argument, Vec<u8>, TypeTag)>;

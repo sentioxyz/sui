@@ -340,7 +340,7 @@ mod checked {
             }
         };
 
-        Mode::finish_command(context, mode_results, argument_updates, &results, &None)?;
+        Mode::finish_command(context, mode_results, argument_updates, &results)?;
         context.push_command_results(results)?;
         Ok(())
     }
