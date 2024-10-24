@@ -666,10 +666,20 @@ impl LocalExec {
         if local_object.is_some() {
             return Ok(local_object);
         }
-        let response = block_on({
-            self.fetcher
-                .get_child_object(object_id, version_upper_bound)
+
+        let (tx, rx) = mpsc::channel();
+        let cloned_fetcher = self.fetcher.clone();
+        let cloned_object_id = object_id.clone();
+        let cloned_version_upper_bound = version_upper_bound.clone();
+        thread::spawn(move || {
+            let resp = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                cloned_fetcher.get_child_object(&cloned_object_id, cloned_version_upper_bound).await
+            });
+            tx.send(resp).unwrap();
         });
+        let response = rx
+            .recv()
+            .unwrap();
         match response {
             Ok(object) => {
                 let obj_ref = object.compute_object_reference();

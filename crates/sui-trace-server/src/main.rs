@@ -25,6 +25,11 @@ impl AppConfig {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::FmtSubscriber::builder()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init()
+        .expect("setting default subscriber failed");
+
     // Get RPC URL from command-line arguments or use a default value
     let rpc_url = env::args().nth(1).unwrap_or_else(|| "https://fullnode.mainnet.sui.io:443".to_string());
     let config = AppConfig::new(rpc_url);

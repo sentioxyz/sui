@@ -379,6 +379,7 @@ mod checked {
                         context,
                         &mut argument_updates,
                         &storage_id,
+                        &runtime_id,
                         &function,
                         loaded_type_arguments.clone(),
                         arguments.clone(),
@@ -508,7 +509,8 @@ mod checked {
     fn get_move_call_trace<Mode: ExecutionMode>(
         context: &mut ExecutionContext<'_, '_, '_>,
         argument_updates: &mut Mode::ArgumentUpdates,
-        module_id: &ModuleId,
+        storage_id: &ModuleId,
+        runtime_id: &ModuleId,
         function: &IdentStr,
         type_arguments: Vec<Type>,
         arguments: Vec<Argument>,
@@ -523,14 +525,14 @@ mod checked {
             last_instr,
         } = check_visibility_and_signature::<Mode>(
             context,
-            module_id,
+            runtime_id,
             function,
             &type_arguments,
             is_init,
         )?;
         // build the arguments, storing meta data about by-mut-ref args
         let (tx_context_kind, by_mut_ref, serialized_arguments) =
-            build_move_args::<Mode>(context, module_id, function, kind, &signature, &arguments)?;
+            build_move_args::<Mode>(context, runtime_id, function, kind, &signature, &arguments)?;
         // invoke the VM and get the call traces
         let (
             SerializedReturnValues {
@@ -540,7 +542,7 @@ mod checked {
             call_traces,
         ) = vm_move_call_trace(
             context,
-            module_id,
+            runtime_id,
             function,
             type_arguments,
             tx_context_kind,
@@ -552,7 +554,11 @@ mod checked {
             "lost mutable input"
         );
 
-        context.take_user_events(module_id, index, last_instr)?;
+        if context.protocol_config.relocate_event_module() {
+            context.take_user_events(storage_id, index, last_instr)?;
+        } else {
+            context.take_user_events(runtime_id, index, last_instr)?;
+        }
 
         // save the link context because calls to `make_value` below can set new ones, and we don't want
         // it to be clobbered.
