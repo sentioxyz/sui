@@ -63,7 +63,7 @@ use crate::{
         type_filter::{FqNameFilter, ModuleFilter},
     },
 };
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel::{CombineDsl, ExpressionMethods, QueryDsl};
 use std::fmt::Write;
 use sui_indexer::schema::checkpoints;
 
@@ -103,7 +103,8 @@ use sui_indexer::schema::checkpoints;
 #[derive(Clone, Debug, Copy)]
 pub(crate) struct TxBounds {
     /// The inclusive lower bound tx_sequence_number derived from checkpoint bounds. If checkpoint
-    /// bounds are not provided, this will default to `0`.
+    /// bounds are not provided, this will default to the smallest transaction sequence number of
+    /// the earliest checkpoint that has not been pruned.
     tx_lo: u64,
 
     /// The exclusive upper bound tx_sequence_number derived from checkpoint bounds. If checkpoint
@@ -129,20 +130,30 @@ impl TxBounds {
     /// Determines the `tx_sequence_number` range from the checkpoint bounds for a transaction block
     /// query. If no checkpoint range is specified, the default is between 0 and the
     /// `checkpoint_viewed_at`. The corresponding `tx_sequence_number` range is fetched from db, and
-    /// further adjusted by cursors and scan limit. If there are any inconsistencies or invalid
-    /// combinations, i.e. `after` cursor is greater than the upper bound, return None.
+    /// further adjusted by cursors and scan limit. If the checkpoints cannot be found, or if there
+    /// are any inconsistencies or invalid combinations, i.e. `after` cursor is greater than the
+    /// upper bound, return None.
     pub(crate) async fn query(
         conn: &mut Conn<'_>,
         cp_after: Option<u64>,
         cp_at: Option<u64>,
         cp_before: Option<u64>,
+        min_unpruned_checkpoint: u64,
         checkpoint_viewed_at: u64,
         scan_limit: Option<u64>,
         page: &Page<Cursor>,
     ) -> Result<Option<Self>, diesel::result::Error> {
-        // Lowerbound in terms of checkpoint sequence number. We want to get the total transaction
-        // count of the checkpoint before this one, or 0 if there is no previous checkpoint.
-        let cp_lo = max_option([cp_after.map(|x| x.saturating_add(1)), cp_at]).unwrap_or(0);
+        // Inclusive lowerbound in terms of checkpoint sequence number. If a lower bound is not set,
+        // we will default to the smallest checkpoint available from the database, retrieved from
+        // the watermark.
+        //
+        // SAFETY: we can unwrap because of the `Some(min_unpruned_checkpoint)`
+        let cp_lo = max_option([
+            cp_after.map(|x| x.saturating_add(1)),
+            cp_at,
+            Some(min_unpruned_checkpoint),
+        ])
+        .unwrap();
 
         let cp_before_inclusive = match cp_before {
             // There are no results strictly before checkpoint 0.
@@ -151,65 +162,88 @@ impl TxBounds {
             None => None,
         };
 
-        // Upperbound in terms of checkpoint sequence number. We want to get the total transaction
-        // count at the end of this checkpoint. If no upperbound is given, use
-        // `checkpoint_viewed_at`.
+        // Inclusive upper bound in terms of checkpoint sequence number. If no upperbound is given,
+        // use `checkpoint_viewed_at`.
         //
         // SAFETY: we can unwrap because of the `Some(checkpoint_viewed_at)
         let cp_hi = min_option([cp_before_inclusive, cp_at, Some(checkpoint_viewed_at)]).unwrap();
 
+        // Read from the `checkpoints` table rather than the `pruner_cp_watermark` table, because
+        // the `checkpoints` table is pruned first.
         use checkpoints::dsl;
-        let (tx_lo, tx_hi) = if let Some(cp_prev) = cp_lo.checked_sub(1) {
-            let res: Vec<i64> = conn
+        // Inclusive lower bound and exclusive upper bound of the transaction sequence number range.
+        let (tx_lo, tx_hi) = {
+            let res: Vec<(i64, Option<i64>, i64)> = conn
                 .results(move || {
-                    dsl::checkpoints
-                        .select(dsl::network_total_transactions)
-                        .filter(dsl::sequence_number.eq_any([cp_prev as i64, cp_hi as i64]))
-                        .order_by(dsl::network_total_transactions.asc())
+                    let min_cp_range = dsl::checkpoints
+                        .select((
+                            dsl::sequence_number,
+                            dsl::min_tx_sequence_number,
+                            dsl::network_total_transactions,
+                        ))
+                        .filter(dsl::sequence_number.eq(cp_lo as i64))
+                        .limit(1);
+
+                    let max_cp_range = dsl::checkpoints
+                        .select((
+                            dsl::sequence_number,
+                            dsl::min_tx_sequence_number,
+                            dsl::network_total_transactions,
+                        ))
+                        .filter(dsl::sequence_number.eq(cp_hi as i64))
+                        .limit(1);
+
+                    min_cp_range.union_all(max_cp_range)
                 })
                 .await?;
 
-            // If there are not two distinct results, it means that the transaction bounds are
-            // empty (lo and hi are the same), or it means that the one or other of the checkpoints
-            // doesn't exist, so we can return early.
-            let &[lo, hi] = res.as_slice() else {
+            let Some(hi_record) = res
+                .iter()
+                .find(|&(checkpoint, _, _)| *checkpoint == cp_hi as i64)
+            else {
                 return Ok(None);
             };
 
-            (lo as u64, hi as u64)
-        } else {
-            let res: Option<i64> = conn
-                .first(move || {
-                    dsl::checkpoints
-                        .select(dsl::network_total_transactions)
-                        .filter(dsl::sequence_number.eq(cp_hi as i64))
-                })
-                .await
-                .optional()?;
-
-            // If there is no result, it means that the checkpoint doesn't exist, so we can return
-            // early.
-            let Some(hi) = res else {
+            let Some(lo_record) = res
+                .iter()
+                .find(|&(checkpoint, _, _)| *checkpoint == cp_lo as i64)
+            else {
                 return Ok(None);
             };
 
-            (0, hi as u64)
+            let tx_lo = match lo_record.1 {
+                Some(lo) => Ok(lo),
+                None => Err(diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::Unknown,
+                    Box::new(
+                        "min_tx_sequence_number should never be None in production".to_string(),
+                    ),
+                )),
+            }? as u64;
+
+            (tx_lo, hi_record.2 as u64)
         };
 
-        // If the cursors point outside checkpoint bounds, we can return early.
-        if matches!(page.after(), Some(a) if tx_hi <= a.tx_sequence_number.saturating_add(1)) {
-            return Ok(None);
-        }
+        let cursor_lo_exclusive = page.after().map(|a| a.tx_sequence_number);
+        let cursor_lo = cursor_lo_exclusive.map(|a| a.saturating_add(1));
+        let cursor_hi = page.before().map(|b| b.tx_sequence_number);
 
-        if matches!(page.before(), Some(b) if b.tx_sequence_number <= tx_lo) {
-            return Ok(None);
+        match (cursor_lo, cursor_hi) {
+            (Some(lo), _) if tx_hi <= lo => return Ok(None),
+            (_, Some(hi)) if hi <= tx_lo => return Ok(None),
+            (Some(lo), Some(hi)) if hi <= lo => return Ok(None),
+            _ => {
+                if tx_hi <= tx_lo {
+                    return Ok(None);
+                }
+            }
         }
 
         Ok(Some(Self {
             tx_lo,
             tx_hi,
-            cursor_lo_exclusive: page.after().map(|a| a.tx_sequence_number),
-            cursor_hi: page.before().map(|b| b.tx_sequence_number),
+            cursor_lo_exclusive,
+            cursor_hi,
             scan_limit,
             end: page.end(),
         }))
@@ -305,7 +339,7 @@ fn min_option<T: Ord>(xs: impl IntoIterator<Item = Option<T>>) -> Option<T> {
 /// Constructs a `RawQuery` as a join over all relevant side tables, filtered on their own filter
 /// condition, plus optionally a sender, plus optionally tx/cp bounds.
 pub(crate) fn subqueries(filter: &TransactionBlockFilter, tx_bounds: TxBounds) -> Option<RawQuery> {
-    let sender = filter.sent_address.or(filter.sign_address);
+    let sender = filter.sent_address;
 
     let mut subqueries = vec![];
 
@@ -343,10 +377,6 @@ pub(crate) fn subqueries(filter: &TransactionBlockFilter, tx_bounds: TxBounds) -
         ));
     }
 
-    if let Some(recv) = &filter.recv_address {
-        subqueries.push(("tx_recipients", select_recipient(recv, sender, tx_bounds)));
-    }
-
     if let Some(input) = &filter.input_object {
         subqueries.push(("tx_input_objects", select_input(input, sender, tx_bounds)));
     }
@@ -359,7 +389,10 @@ pub(crate) fn subqueries(filter: &TransactionBlockFilter, tx_bounds: TxBounds) -
     }
 
     if let Some(sender) = &filter.explicit_sender() {
-        subqueries.push(("tx_senders", select_sender(sender, tx_bounds)));
+        subqueries.push((
+            "tx_affected_addresses",
+            select_affected_address(sender, Some(*sender), tx_bounds),
+        ));
     }
 
     if let Some(txs) = &filter.transaction_ids {
@@ -441,19 +474,21 @@ fn select_fun(
 
 /// Returns a RawQuery that selects transactions of a specific kind. If SystemTX is specified, we
 /// ignore the `sender`. If ProgrammableTX is specified, we filter against the `tx_kinds` table if
-/// no `sender` is provided; otherwise, we just query the `tx_senders` table. Other combinations, in
-/// particular when kind is SystemTx and sender is specified and not 0x0, are inconsistent and will
-/// not produce any results. These inconsistent cases are expected to be checked for before this is
-/// called.
+/// no `sender` is provided; otherwise, we just query the `tx_affected_addresses` table. Other
+/// combinations, in particular when kind is SystemTx and sender is specified and not 0x0, are
+/// inconsistent and will not produce any results. These inconsistent cases are expected to be
+/// checked for before this is called.
 fn select_kind(
     kind: TransactionBlockKindInput,
     sender: Option<SuiAddress>,
     bound: TxBounds,
 ) -> RawQuery {
     match (kind, sender) {
-        // We can simplify the query to just the `tx_senders` table if ProgrammableTX and sender is
-        // specified.
-        (TransactionBlockKindInput::ProgrammableTx, Some(sender)) => select_sender(&sender, bound),
+        // We can simplify the query to just the `tx_affected_addresses` table if ProgrammableTX
+        // and sender is specified.
+        (TransactionBlockKindInput::ProgrammableTx, Some(sender)) => {
+            select_affected_address(&sender, Some(sender), bound)
+        }
         // Otherwise, we can ignore the sender always, and just query the `tx_kinds` table.
         _ => filter!(
             select_tx(None, bound, "tx_kinds"),
@@ -482,17 +517,6 @@ fn select_affected_object(
     filter!(
         select_tx(sender, bound, "tx_affected_objects"),
         format!("affected = {}", bytea_literal(affected.as_slice()))
-    )
-}
-
-fn select_sender(sender: &SuiAddress, bound: TxBounds) -> RawQuery {
-    select_tx(Some(*sender), bound, "tx_senders")
-}
-
-fn select_recipient(recv: &SuiAddress, sender: Option<SuiAddress>, bound: TxBounds) -> RawQuery {
-    filter!(
-        select_tx(sender, bound, "tx_recipients"),
-        format!("recipient = {}", bytea_literal(recv.as_slice()))
     )
 }
 

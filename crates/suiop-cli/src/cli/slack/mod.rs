@@ -15,24 +15,31 @@ use tracing::debug;
 /// Reexport for convenience
 pub use slack_api::*;
 
+use crate::LOCAL_CACHE_DIR;
+
 #[derive(Debug, Default)]
 pub struct Slack {
     client: Client,
     pub channels: Vec<Channel>,
-    pub users: Vec<User>,
+    pub users: Vec<SlackUser>,
 }
 
 fn get_serialize_filepath(subname: &str) -> PathBuf {
     dirs::home_dir()
         .expect("HOME env var not set")
-        .join(".suiop")
+        .join(LOCAL_CACHE_DIR)
         .join(subname)
 }
 
 /// Serialize the obj into ~/.suiop/{subname} so we can cache it across
 /// executions
 pub fn serialize_to_file<T: Serialize>(subname: &str, obj: &Vec<T>) -> Result<()> {
-    let file = File::create(get_serialize_filepath(subname).as_path())?;
+    let filepath = get_serialize_filepath(subname);
+    // Ensure the parent directory exists
+    if let Some(parent) = filepath.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(filepath.as_path())?;
     serde_json::to_writer(file, obj)?;
     Ok(())
 }
@@ -42,9 +49,12 @@ pub fn serialize_to_file<T: Serialize>(subname: &str, obj: &Vec<T>) -> Result<()
 ///
 /// Otherwise return None
 pub fn deserialize_from_file<T: DeserializeOwned>(subname: &str) -> Option<Vec<T>> {
+    let force_refresh = std::env::var("FORCE_REFRESH").is_ok();
     let mut result = None;
     let file_path = get_serialize_filepath(subname);
-    if let Ok(metadata) = file_path.metadata() {
+    if force_refresh {
+        result = None;
+    } else if let Ok(metadata) = file_path.metadata() {
         if let Ok(modified) = metadata.modified() {
             if let Ok(elapsed) = modified.elapsed() {
                 // 1 day
@@ -67,6 +77,7 @@ impl Slack {
         let token = std::env::var("SLACK_BOT_TOKEN").expect(
             "Please set SLACK_BOT_TOKEN env var ('slack bot token (incidentbot)' in 1password)",
         );
+        debug!("using slack token {}", token);
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,

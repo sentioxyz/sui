@@ -131,8 +131,8 @@ pub async fn init_package(
     client: &SuiClient,
     keystore: &Keystore,
     sender: SuiAddress,
+    path: &Path,
 ) -> Result<InitRet> {
-    let path = Path::new("tests/custom_coins/test_coin");
     let path_buf = base::reroot_path(Some(path))?;
 
     let move_build_config = MoveBuildConfig::default();
@@ -266,7 +266,14 @@ async fn test_mint() {
     let keystore = &test_cluster.wallet.config.keystore;
 
     let sender = test_cluster.get_address_0();
-    let init_ret = init_package(&client, keystore, sender).await.unwrap();
+    let init_ret = init_package(
+        &client,
+        keystore,
+        sender,
+        Path::new("tests/custom_coins/test_coin"),
+    )
+    .await
+    .unwrap();
 
     let address1 = test_cluster.get_address_1();
     let address2 = test_cluster.get_address_2();
@@ -290,8 +297,14 @@ async fn test_mint() {
             }
         })
         .collect::<Vec<_>>();
-    let coin1 = coins.iter().find(|coin| coin.1 == address1).unwrap();
-    let coin2 = coins.iter().find(|coin| coin.1 == address2).unwrap();
+    let coin1 = coins
+        .iter()
+        .find(|coin| coin.1.get_address_owner_address().unwrap() == address1)
+        .unwrap();
+    let coin2 = coins
+        .iter()
+        .find(|coin| coin.1.get_address_owner_address().unwrap() == address2)
+        .unwrap();
     assert!(coin1.0.to_string().contains("::test_coin::TEST_COIN"));
     assert!(coin2.0.to_string().contains("::test_coin::TEST_COIN"));
 }

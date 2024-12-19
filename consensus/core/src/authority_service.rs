@@ -409,18 +409,28 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
         Ok(result)
     }
 
-    async fn handle_get_latest_rounds(&self, _peer: AuthorityIndex) -> ConsensusResult<Vec<Round>> {
+    async fn handle_get_latest_rounds(
+        &self,
+        _peer: AuthorityIndex,
+    ) -> ConsensusResult<(Vec<Round>, Vec<Round>)> {
         fail_point_async!("consensus-rpc-response");
 
         let mut highest_received_rounds = self.core_dispatcher.highest_received_rounds();
-        // Own blocks do not go through the core dispatcher, so they need to be set separately.
-        highest_received_rounds[self.context.own_index] = self
+
+        let blocks = self
             .dag_state
             .read()
-            .get_last_block_for_authority(self.context.own_index)
-            .round();
+            .get_last_cached_block_per_authority(Round::MAX);
+        let highest_accepted_rounds = blocks
+            .into_iter()
+            .map(|block| block.round())
+            .collect::<Vec<_>>();
 
-        Ok(highest_received_rounds)
+        // Own blocks do not go through the core dispatcher, so they need to be set separately.
+        highest_received_rounds[self.context.own_index] =
+            highest_accepted_rounds[self.context.own_index];
+
+        Ok((highest_received_rounds, highest_accepted_rounds))
     }
 }
 
@@ -600,20 +610,21 @@ async fn make_recv_future<T: Clone>(
 
 #[cfg(test)]
 mod tests {
-    use crate::commit::CommitRange;
-    use crate::test_dag_builder::DagBuilder;
     use crate::{
         authority_service::AuthorityService,
         block::BlockAPI,
         block::{BlockRef, SignedBlock, TestBlock, VerifiedBlock},
+        commit::CommitRange,
         commit_vote_monitor::CommitVoteMonitor,
         context::Context,
         core_thread::{CoreError, CoreThreadDispatcher},
         dag_state::DagState,
         error::ConsensusResult,
         network::{BlockStream, NetworkClient, NetworkService},
+        round_prober::QuorumRound,
         storage::mem_store::MemStore,
         synchronizer::Synchronizer,
+        test_dag_builder::DagBuilder,
         Round,
     };
     use async_trait::async_trait;
@@ -665,7 +676,12 @@ mod tests {
             todo!()
         }
 
-        fn set_propagation_delay(&self, _delay: Round) -> Result<(), CoreError> {
+        fn set_propagation_delay_and_quorum_rounds(
+            &self,
+            _delay: Round,
+            _received_quorum_rounds: Vec<QuorumRound>,
+            _accepted_quorum_rounds: Vec<QuorumRound>,
+        ) -> Result<(), CoreError> {
             todo!()
         }
 
@@ -735,7 +751,7 @@ mod tests {
             &self,
             _peer: AuthorityIndex,
             _timeout: Duration,
-        ) -> ConsensusResult<Vec<Round>> {
+        ) -> ConsensusResult<(Vec<Round>, Vec<Round>)> {
             unimplemented!("Unimplemented")
         }
     }

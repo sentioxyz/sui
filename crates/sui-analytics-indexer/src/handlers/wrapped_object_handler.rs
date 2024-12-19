@@ -9,7 +9,7 @@ use sui_types::SYSTEM_PACKAGE_ADDRESSES;
 use tokio::sync::Mutex;
 
 use sui_package_resolver::Resolver;
-use sui_rest_api::{CheckpointData, CheckpointTransaction};
+use sui_rpc_api::{CheckpointData, CheckpointTransaction};
 use sui_types::object::Object;
 
 use crate::handlers::{get_move_struct, parse_struct, AnalyticsHandler};
@@ -30,6 +30,8 @@ struct State {
 
 #[async_trait::async_trait]
 impl Worker for WrappedObjectHandler {
+    type Result = ();
+
     async fn process_checkpoint(&self, checkpoint_data: &CheckpointData) -> Result<()> {
         let CheckpointData {
             checkpoint_summary,

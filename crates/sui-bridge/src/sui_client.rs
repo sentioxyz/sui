@@ -254,6 +254,7 @@ where
                 ""
             });
             authorities.push(BridgeAuthority {
+                sui_address,
                 pubkey,
                 voting_power,
                 base_url: base_url.into(),
@@ -566,7 +567,7 @@ impl SuiClientInner for SuiSdkClient {
                 .map(|resp| resp.data)
             {
                 Ok(Some(gas_obj)) => {
-                    let owner = gas_obj.owner.expect("Owner is requested");
+                    let owner = gas_obj.owner.clone().expect("Owner is requested");
                     let gas_coin = GasCoin::try_from(&gas_obj)
                         .unwrap_or_else(|err| panic!("{} is not a gas coin: {err}", gas_object_id));
                     return (gas_coin, gas_obj.object_ref(), owner);
@@ -643,7 +644,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::crypto::BridgeAuthorityKeyPair;
-    use crate::BRIDGE_ENABLE_PROTOCOL_VERSION;
+    use crate::e2e_tests::test_utils::TestClusterWrapperBuilder;
     use crate::{
         events::{EmittedSuiToEthTokenBridgeV1, MoveTokenDepositedEvent},
         sui_mock_client::SuiMockClient,
@@ -657,9 +658,9 @@ mod tests {
     use move_core_types::account_address::AccountAddress;
     use serde::{Deserialize, Serialize};
     use std::str::FromStr;
+    use sui_json_rpc_types::BcsEvent;
     use sui_types::bridge::{BridgeChainId, TOKEN_ID_SUI, TOKEN_ID_USDC};
     use sui_types::crypto::get_key_pair;
-    use test_cluster::TestClusterBuilder;
 
     use super::*;
     use crate::events::{init_all_struct_tags, SuiToEthTokenBridgeV1};
@@ -698,7 +699,7 @@ mod tests {
 
         let mut sui_event_1 = SuiEvent::random_for_testing();
         sui_event_1.type_ = SuiToEthTokenBridgeV1.get().unwrap().clone();
-        sui_event_1.bcs = bcs::to_bytes(&emitted_event_1).unwrap();
+        sui_event_1.bcs = BcsEvent::new(bcs::to_bytes(&emitted_event_1).unwrap());
 
         #[derive(Serialize, Deserialize)]
         struct RandomStruct {}
@@ -708,7 +709,7 @@ mod tests {
         let mut sui_event_2 = SuiEvent::random_for_testing();
         sui_event_2.type_ = SuiToEthTokenBridgeV1.get().unwrap().clone();
         sui_event_2.type_.module = Identifier::from_str("unrecognized_module").unwrap();
-        sui_event_2.bcs = bcs::to_bytes(&event_2).unwrap();
+        sui_event_2.bcs = BcsEvent::new(bcs::to_bytes(&event_2).unwrap());
 
         // Event 3 is defined in non-bridge package
         let mut sui_event_3 = sui_event_1.clone();
@@ -789,22 +790,24 @@ mod tests {
             let (_, kp): (_, BridgeAuthorityKeyPair) = get_key_pair();
             bridge_keys.push(kp);
         }
-        let mut test_cluster: test_cluster::TestCluster = TestClusterBuilder::new()
-            .with_protocol_version((BRIDGE_ENABLE_PROTOCOL_VERSION).into())
-            .build_with_bridge(bridge_keys, true)
+        let mut test_cluster = TestClusterWrapperBuilder::new()
+            .with_bridge_authority_keys(bridge_keys)
+            .with_deploy_tokens(true)
+            .build()
             .await;
 
         let bridge_metrics = Arc::new(BridgeMetrics::new_for_testing());
-        let sui_client = SuiClient::new(&test_cluster.fullnode_handle.rpc_url, bridge_metrics)
-            .await
-            .unwrap();
-        let bridge_authority_keys = test_cluster.bridge_authority_keys.take().unwrap();
+        let sui_client =
+            SuiClient::new(&test_cluster.inner.fullnode_handle.rpc_url, bridge_metrics)
+                .await
+                .unwrap();
+        let bridge_authority_keys = test_cluster.authority_keys_clone();
 
         // Wait until committee is set up
         test_cluster
             .trigger_reconfiguration_if_not_yet_and_assert_bridge_committee_initialized()
             .await;
-        let context = &mut test_cluster.wallet;
+        let context = &mut test_cluster.inner.wallet;
         let sender = context.active_address().unwrap();
         let usdc_amount = 5000000;
         let bridge_object_arg = sui_client

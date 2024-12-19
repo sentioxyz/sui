@@ -38,7 +38,8 @@ use sui_types::quorum_driver_types::{
     QuorumDriverError, QuorumDriverResponse, QuorumDriverResult,
 };
 use sui_types::sui_system_state::SuiSystemState;
-use sui_types::transaction::VerifiedTransaction;
+use sui_types::transaction::{TransactionData, VerifiedTransaction};
+use sui_types::transaction_executor::SimulateTransactionResult;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 use tokio::task::JoinHandle;
@@ -97,15 +98,14 @@ where
         prometheus_registry: &Registry,
         reconfig_observer: OnsiteReconfigObserver,
     ) -> Self {
+        let metrics = Arc::new(QuorumDriverMetrics::new(prometheus_registry));
         let notifier = Arc::new(NotifyRead::new());
+        let reconfig_observer = Arc::new(reconfig_observer);
         let quorum_driver_handler = Arc::new(
-            QuorumDriverHandlerBuilder::new(
-                validators,
-                Arc::new(QuorumDriverMetrics::new(prometheus_registry)),
-            )
-            .with_notifier(notifier.clone())
-            .with_reconfig_observer(Arc::new(reconfig_observer))
-            .start(),
+            QuorumDriverHandlerBuilder::new(validators.clone(), metrics.clone())
+                .with_notifier(notifier.clone())
+                .with_reconfig_observer(reconfig_observer.clone())
+                .start(),
         );
 
         let effects_receiver = quorum_driver_handler.subscribe_to_effects();
@@ -384,17 +384,7 @@ where
                 metrics.local_execution_timeout.inc();
                 Err(SuiError::TimeoutError)
             }
-            Ok(Err(err)) => {
-                debug!(
-                    ?tx_digest,
-                    "Waiting for finalized tx to be executed locally failed with error: {:?}", err
-                );
-                metrics.local_execution_failure.inc();
-                Err(SuiError::TransactionOrchestratorLocalExecutionError {
-                    error: err.to_string(),
-                })
-            }
-            Ok(Ok(_)) => {
+            Ok(_) => {
                 metrics.local_execution_success.inc();
                 Ok(())
             }
@@ -552,7 +542,6 @@ pub struct TransactionOrchestratorMetrics {
     local_execution_in_flight: GenericGauge<AtomicI64>,
     local_execution_success: GenericCounter<AtomicU64>,
     local_execution_timeout: GenericCounter<AtomicU64>,
-    local_execution_failure: GenericCounter<AtomicU64>,
 
     request_latency_single_writer: Histogram,
     request_latency_shared_obj: Histogram,
@@ -672,12 +661,6 @@ impl TransactionOrchestratorMetrics {
                 registry,
             )
             .unwrap(),
-            local_execution_failure: register_int_counter_with_registry!(
-                "tx_orchestrator_local_execution_failure",
-                "Total number of failed local execution txns Transaction Orchestrator handles",
-                registry,
-            )
-            .unwrap(),
             request_latency_single_writer: request_latency
                 .with_label_values(&[TX_TYPE_SINGLE_WRITER_TX]),
             request_latency_shared_obj: request_latency.with_label_values(&[TX_TYPE_SHARED_OBJ_TX]),
@@ -709,5 +692,12 @@ where
         client_addr: Option<std::net::SocketAddr>,
     ) -> Result<ExecuteTransactionResponseV3, QuorumDriverError> {
         self.execute_transaction_v3(request, client_addr).await
+    }
+
+    fn simulate_transaction(
+        &self,
+        transaction: TransactionData,
+    ) -> Result<SimulateTransactionResult, SuiError> {
+        self.validator_state.simulate_transaction(transaction)
     }
 }

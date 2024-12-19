@@ -16,7 +16,7 @@ use tracing::warn;
 use sui_indexer::types::owner_to_owner_info;
 use sui_json_rpc_types::SuiMoveValue;
 use sui_package_resolver::Resolver;
-use sui_rest_api::{CheckpointData, CheckpointTransaction};
+use sui_rpc_api::{CheckpointData, CheckpointTransaction};
 use sui_types::base_types::ObjectID;
 use sui_types::dynamic_field::visitor as DFV;
 use sui_types::dynamic_field::{DynamicFieldName, DynamicFieldType};
@@ -39,6 +39,8 @@ struct State {
 
 #[async_trait::async_trait]
 impl Worker for DynamicFieldHandler {
+    type Result = ();
+
     async fn process_checkpoint(&self, checkpoint_data: &CheckpointData) -> Result<()> {
         let CheckpointData {
             checkpoint_summary,
