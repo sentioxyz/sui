@@ -40,7 +40,7 @@ mod data_fetcher;
 mod displays;
 pub mod fuzz;
 pub mod fuzz_mutations;
-mod replay;
+pub mod replay;
 pub mod transaction_provider;
 pub mod types;
 
@@ -647,13 +647,17 @@ fn parse_configs_versions(
     )
 }
 
+pub async fn init_for_tracer(
+    rpc_url: String,
+) -> Result<LocalExec, ReplayEngineError> {
+    LocalExec::init_for_tracer(rpc_url).await
+}
+
 pub async fn execute_call_trace(
-    rpc_url: Option<String>,
+    local_exec: LocalExec,
     tx_digest: String,
     safety_checks: bool,
     use_authority: bool,
-    cfg_path: Option<PathBuf>,
-    chain: Option<String>,
 ) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
     let safety = if safety_checks {
         ExpensiveSafetyCheckConfig::new_enable_all()
@@ -662,8 +666,8 @@ pub async fn execute_call_trace(
     };
     let tx_digest = TransactionDigest::from_str(&tx_digest)?;
     info!("Tracing tx: {}", tx_digest);
-    let sandbox_state = LocalExec::replay_with_network_config(
-        get_rpc_url(rpc_url, cfg_path, chain)?,
+    let sandbox_state = LocalExec::replay_with_network_config_for_trace(
+        local_exec,
         tx_digest,
         safety,
         use_authority,

@@ -24,12 +24,8 @@ use move_core_types::{
 use prometheus::Registry;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-    sync::Mutex,
-};
+use std::{collections::{BTreeMap, HashSet}, path::PathBuf, sync::Arc, sync::Mutex, thread};
+use std::sync::mpsc;
 use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_core::authority::NodeStateDump;
 use sui_execution::Executor;
@@ -323,6 +319,15 @@ impl LocalExec {
         .await
     }
 
+    pub async fn init_for_tracer(
+        rpc_url: String,
+    ) -> Result<LocalExec, ReplayEngineError> {
+        LocalExec::new_from_fn_url(&rpc_url)
+            .await?
+            .init_for_execution()
+            .await
+    }
+
     pub async fn replay_with_network_config(
         rpc_url: String,
         tx_digest: TransactionDigest,
@@ -354,13 +359,41 @@ impl LocalExec {
             .await
     }
 
+    pub async fn replay_with_network_config_for_trace(
+        mut local_exec: LocalExec,
+        tx_digest: TransactionDigest,
+        expensive_safety_check_config: ExpensiveSafetyCheckConfig,
+        use_authority: bool,
+        executor_version: Option<i64>,
+        protocol_version: Option<i64>,
+        enable_profiler: Option<PathBuf>,
+        config_and_versions: Option<Vec<(ObjectID, SequenceNumber)>>,
+        enable_trace: bool,
+        enable_trace_v2: bool,
+    ) -> Result<ExecutionSandboxState, ReplayEngineError> {
+        local_exec.execute_transaction(
+            &tx_digest,
+            expensive_safety_check_config,
+            use_authority,
+            executor_version,
+            protocol_version,
+            enable_profiler,
+            config_and_versions,
+            enable_trace,
+            enable_trace_v2,
+        )
+        .await
+    }
+
     /// This captures the state of the network at a given point in time and populates
     /// prptocol version tables including which system packages to fetch
     /// If this function is called across epoch boundaries, the info might be stale.
     /// But it should only be called once per epoch.
     pub async fn init_for_execution(mut self) -> Result<Self, ReplayEngineError> {
+        info!("init for execution");
         self.populate_protocol_version_tables().await?;
         tokio::task::yield_now().await;
+        info!("init for execution done");
         Ok(self)
     }
 
@@ -577,14 +610,22 @@ impl LocalExec {
         &self,
         object_id: &ObjectID,
     ) -> Result<Option<Object>, ReplayEngineError> {
-        let resp = block_on({
-            //info!("Downloading latest object {object_id}");
-            self.multi_download_latest(&[*object_id])
-        })
-        .map(|mut q| {
-            q.pop()
-                .unwrap_or_else(|| panic!("Downloaded obj response cannot be empty {}", *object_id))
+        let (tx, rx) = mpsc::channel();
+        let cloned_fetcher = self.fetcher.clone();
+        let cloned_object_id = object_id.clone();
+        thread::spawn(move || {
+            let resp = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                cloned_fetcher.multi_get_latest(&[cloned_object_id]).await
+            });
+            tx.send(resp).unwrap();
         });
+        let resp = rx
+            .recv()
+            .unwrap()
+            .map(|mut q| {
+                q.pop()
+                    .unwrap_or_else(|| panic!("Downloaded obj response cannot be empty {}", *object_id))
+            });
 
         match resp {
             Ok(v) => Ok(Some(v)),
@@ -622,10 +663,20 @@ impl LocalExec {
         if local_object.is_some() {
             return Ok(local_object);
         }
-        let response = block_on({
-            self.fetcher
-                .get_child_object(object_id, version_upper_bound)
+
+        let (tx, rx) = mpsc::channel();
+        let cloned_fetcher = self.fetcher.clone();
+        let cloned_object_id = object_id.clone();
+        let cloned_version_upper_bound = version_upper_bound.clone();
+        thread::spawn(move || {
+            let resp = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                cloned_fetcher.get_child_object(&cloned_object_id, cloned_version_upper_bound).await
+            });
+            tx.send(resp).unwrap();
         });
+        let response = rx
+            .recv()
+            .unwrap();
         match response {
             Ok(object) => {
                 let obj_ref = object.compute_object_reference();
@@ -1064,6 +1115,7 @@ impl LocalExec {
         enable_trace: bool,
         enable_trace_v2: bool,
     ) -> Result<ExecutionSandboxState, ReplayEngineError> {
+        info!("Executing transaction: {}", tx_digest);
         self.executor_version = executor_version;
         self.protocol_version = protocol_version;
         self.enable_profiler = enable_profiler;
