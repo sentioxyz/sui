@@ -36,6 +36,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
+use move_binary_format::errors::VMError;
 use tracing::warn;
 
 /// An instantiation of the MoveVM.
@@ -532,7 +533,7 @@ impl VMRuntime {
         gas_meter: &mut impl GasMeter,
         extensions: &mut NativeContextExtensions,
         tracer: Option<&mut MoveTraceBuilder>,
-    ) -> VMResult<(SerializedReturnValues, CallTraces)> {
+    ) -> VMResult<(Result<SerializedReturnValues, VMError>, CallTraces)> {
         // load the function
         let (compiled, _, func, function_instantiation) =
             self.loader
@@ -543,30 +544,6 @@ impl VMRuntime {
             parameters,
             return_,
         } = function_instantiation;
-
-        // use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
-        // fn check_is_entry(
-        //     _resolver: &BinaryIndexedView,
-        //     is_entry: bool,
-        //     _parameters_idx: SignatureIndex,
-        //     _return_idx: Option<SignatureIndex>,
-        // ) -> PartialVMResult<()> {
-        //     if is_entry {
-        //         Ok(())
-        //     } else {
-        //         Err(PartialVMError::new(
-        //             StatusCode::EXECUTE_ENTRY_FUNCTION_CALLED_ON_NON_ENTRY_FUNCTION,
-        //         ))
-        //     }
-        // }
-
-        // let additional_signature_checks = check_is_entry;
-
-        // script_signature::verify_module_function_signature_by_name(
-        //     compiled.as_ref(),
-        //     function_name,
-        //     additional_signature_checks,
-        // )?;
 
         let arg_types = parameters
             .into_iter()
@@ -601,35 +578,36 @@ impl VMRuntime {
             &mut tracer.map(VMTracer::new),
         )?;
 
-        let serialized_return_values = self
-            .serialize_return_values(&return_types, return_values)
-            .map_err(|e| e.finish(Location::Undefined))?;
-        let serialized_mut_ref_outputs = mut_ref_args
-            .into_iter()
-            .map(|(idx, ty)| {
-                // serialize return values first in the case that a value points into this local
-                let local_val = dummy_locals.move_loc(
-                    idx,
-                    self.loader
-                        .vm_config()
-                        .enable_invariant_violation_check_in_swap_loc,
-                )?;
-                let (bytes, layout) = self.serialize_return_value(&ty, local_val)?;
-                Ok((idx as LocalIndex, bytes, layout))
+        let serialization_result = (|| {
+            let serialized_return_values = self
+                .serialize_return_values(&return_types, return_values)
+                .map_err(|e| e.finish(Location::Undefined))?;
+            let serialized_mut_ref_outputs = mut_ref_args
+                .into_iter()
+                .map(|(idx, ty)| {
+                    // serialize return values first in the case that a value points into this local
+                    let local_val = dummy_locals.move_loc(
+                        idx,
+                        self.loader
+                            .vm_config()
+                            .enable_invariant_violation_check_in_swap_loc,
+                    )?;
+                    let (bytes, layout) = self.serialize_return_value(&ty, local_val)?;
+                    Ok((idx as LocalIndex, bytes, layout))
+                })
+                .collect::<PartialVMResult<_>>()
+                .map_err(|e| e.finish(Location::Undefined))?;
+
+            Ok(SerializedReturnValues {
+                mutable_reference_outputs: serialized_mut_ref_outputs,
+                return_values: serialized_return_values,
             })
-            .collect::<PartialVMResult<_>>()
-            .map_err(|e| e.finish(Location::Undefined))?;
+        })();
 
         // locals should not be dropped until all return values are serialized
         std::mem::drop(dummy_locals);
 
-        Ok((
-            SerializedReturnValues {
-                mutable_reference_outputs: serialized_mut_ref_outputs,
-                return_values: serialized_return_values,
-            },
-            call_traces,
-        ))
+        Ok((serialization_result, call_traces))
     }
 
     pub fn type_to_fully_annotated_layout(&self, ty: &Type) -> VMResult<A::MoveTypeLayout> {

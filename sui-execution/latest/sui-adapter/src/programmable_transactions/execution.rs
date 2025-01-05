@@ -36,6 +36,7 @@ mod checked {
         fmt,
         sync::Arc,
     };
+    use move_binary_format::errors::VMError;
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::execution_config_utils::to_binary_config;
@@ -93,6 +94,10 @@ mod checked {
         let mut mode_results = Mode::empty_results();
         for (idx, command) in commands.into_iter().enumerate() {
             if let Err(err) = execute_command::<Mode>(&mut context, &mut mode_results, command) {
+                if Mode::get_call_trace() {
+                    // break here
+                    break;
+                }
                 let object_runtime: &ObjectRuntime = context.object_runtime();
                 // We still need to record the loaded child objects for replay
                 let loaded_runtime_objects = object_runtime.loaded_runtime_objects();
@@ -387,7 +392,18 @@ mod checked {
                     )?;
 
                     context.linkage_view.reset_linkage();
-                    (return_values, Some(call_traces))
+
+                    // if the return values are an error, we need to return the call traces
+                    if return_values.is_err() {
+                        Mode::finish_command(
+                            context,
+                            mode_results,
+                            Mode::empty_arguments(),
+                            Vec::new().as_slice(),
+                            &Some(call_traces.clone()),
+                        )?;
+                    }
+                    (return_values?, Some(call_traces))
                 } else {
                     let return_values = execute_move_call::<Mode>(
                         context,
@@ -515,7 +531,7 @@ mod checked {
         type_arguments: Vec<Type>,
         arguments: Vec<Argument>,
         is_init: bool,
-    ) -> Result<(Vec<Value>, CallTraces), ExecutionError> {
+    ) -> Result<(Result<Vec<Value>, ExecutionError>, CallTraces), ExecutionError> {
         // check that the function is either an entry function or a valid public function
         let LoadedFunctionInfo {
             kind,
@@ -531,14 +547,17 @@ mod checked {
             is_init,
         )?;
         // build the arguments, storing meta data about by-mut-ref args
-        let (tx_context_kind, by_mut_ref, serialized_arguments) =
-            build_move_args::<Mode>(context, runtime_id, function, kind, &signature, &arguments)?;
+        let (tx_context_kind, by_mut_ref, serialized_arguments) = build_move_args::<Mode>(
+            context,
+            runtime_id,
+            function,
+            kind,
+            &signature,
+            &arguments,
+        )?;
         // invoke the VM and get the call traces
         let (
-            SerializedReturnValues {
-                mutable_reference_outputs,
-                return_values,
-            },
+            serialized_return_values,
             call_traces,
         ) = vm_move_call_trace(
             context,
@@ -549,38 +568,48 @@ mod checked {
             serialized_arguments,
         )?;
 
-        assert_invariant!(
-            by_mut_ref.len() == mutable_reference_outputs.len(),
-            "lost mutable input"
-        );
+        match serialized_return_values {
+            Ok(serialized_return_values) => {
+                let SerializedReturnValues {
+                    mutable_reference_outputs,
+                    return_values,
+                } = serialized_return_values;
 
-        if context.protocol_config.relocate_event_module() {
-            context.take_user_events(storage_id, index, last_instr)?;
-        } else {
-            context.take_user_events(runtime_id, index, last_instr)?;
+                assert_invariant!(
+                    by_mut_ref.len() == mutable_reference_outputs.len(),
+                    "lost mutable input"
+                );
+
+                if context.protocol_config.relocate_event_module() {
+                    context.take_user_events(storage_id, index, last_instr)?;
+                } else {
+                    context.take_user_events(runtime_id, index, last_instr)?;
+                }
+
+                // save the link context because calls to `make_value` below can set new ones, and we don't want
+                // it to be clobbered.
+                let saved_linkage = context.linkage_view.steal_linkage();
+                // write back mutable inputs. We also update if they were used in non entry Move calls
+                // though we do not care for immutable usages of objects or other values
+                let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
+                let res = write_back_results::<Mode>(
+                    context,
+                    argument_updates,
+                    &arguments,
+                    used_in_non_entry_move_call,
+                    mutable_reference_outputs
+                        .into_iter()
+                        .map(|(i, bytes, _layout)| (i, bytes)),
+                    by_mut_ref,
+                    return_values.into_iter().map(|(bytes, _layout)| bytes),
+                    return_value_kinds,
+                )?;
+
+                context.linkage_view.restore_linkage(saved_linkage)?;
+                Ok((Ok(res), call_traces))
+            }
+            Err(e) => Err(e),
         }
-
-        // save the link context because calls to `make_value` below can set new ones, and we don't want
-        // it to be clobbered.
-        let saved_linkage = context.linkage_view.steal_linkage();
-        // write back mutable inputs. We also update if they were used in non entry Move calls
-        // though we do not care for immutable usages of objects or other values
-        let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
-        let res = write_back_results::<Mode>(
-            context,
-            argument_updates,
-            &arguments,
-            used_in_non_entry_move_call,
-            mutable_reference_outputs
-                .into_iter()
-                .map(|(i, bytes, _layout)| (i, bytes)),
-            by_mut_ref,
-            return_values.into_iter().map(|(bytes, _layout)| bytes),
-            return_value_kinds,
-        )?;
-
-        context.linkage_view.restore_linkage(saved_linkage)?;
-        Ok((res, call_traces))
     }
 
     fn write_back_results<Mode: ExecutionMode>(
@@ -994,7 +1023,7 @@ mod checked {
         type_arguments: Vec<Type>,
         tx_context_kind: TxContextKind,
         mut serialized_arguments: Vec<Vec<u8>>,
-    ) -> Result<(SerializedReturnValues, CallTraces), ExecutionError> {
+    ) -> Result<(Result<SerializedReturnValues, ExecutionError>, CallTraces), ExecutionError> {
         match tx_context_kind {
             TxContextKind::None => (),
             TxContextKind::Mutable | TxContextKind::Immutable => {
@@ -1002,7 +1031,7 @@ mod checked {
             }
         }
         // script visibility checked manually for entry points
-        let mut result = context
+        let result = context
             .call_trace(module_id, function, type_arguments, serialized_arguments)
             .map_err(|e| context.convert_vm_error(e))?;
 
@@ -1013,19 +1042,24 @@ mod checked {
         // reflects what happened each time we call into the
         // Move VM (e.g. to account for the number of created
         // objects).
-        if tx_context_kind == TxContextKind::Mutable {
-            let Some((_, ctx_bytes, _)) = result.0.mutable_reference_outputs.pop() else {
-                invariant_violation!("Missing TxContext in reference outputs");
-            };
-            let updated_ctx: TxContext = bcs::from_bytes(&ctx_bytes).map_err(|e| {
-                ExecutionError::invariant_violation(format!(
-                    "Unable to deserialize TxContext bytes. {e}"
-                ))
-            })?;
-            context.tx_context.update_state(updated_ctx)?;
-        }
+        if let Ok(mut serialized_return_values) = result.0 {
+            if tx_context_kind == TxContextKind::Mutable {
+                let Some((_, ctx_bytes, _)) = serialized_return_values.mutable_reference_outputs.pop() else {
+                    invariant_violation!("Missing TxContext in reference outputs");
+                };
 
-        Ok(result)
+                let updated_ctx: TxContext = bcs::from_bytes(&ctx_bytes).map_err(|e| {
+                    ExecutionError::invariant_violation(format!(
+                        "Unable to deserialize TxContext bytes. {e}"
+                    ))
+                })?;
+                context.tx_context.update_state(updated_ctx)?;
+            }
+            Ok((Ok(serialized_return_values), result.1))
+        }
+        else {
+            Ok((result.0.map_err(|e| context.convert_vm_error(e)), result.1))
+        }
     }
 
     #[allow(clippy::extra_unused_type_parameters)]
