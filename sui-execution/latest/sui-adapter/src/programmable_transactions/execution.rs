@@ -608,7 +608,7 @@ mod checked {
                 context.linkage_view.restore_linkage(saved_linkage)?;
                 Ok((Ok(res), call_traces))
             }
-            Err(e) => Err(e),
+            Err(e) => Ok((Err(e), call_traces)),
         }
     }
 
