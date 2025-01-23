@@ -23,6 +23,7 @@ pub mod proptest_types;
 pub mod serializer;
 pub mod call_trace;
 
+pub mod inclusion_mode;
 #[cfg(test)]
 mod unit_tests;
 
