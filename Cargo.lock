@@ -13114,6 +13114,7 @@ dependencies = [
  "mysten-metrics",
  "parking_lot 0.12.3",
  "serde",
+ "serde_json",
  "sui-macros",
  "sui-move-natives-latest",
  "sui-protocol-config",
@@ -15470,6 +15471,7 @@ dependencies = [
  "bcs",
  "clap",
  "futures",
+ "hex",
  "http 1.1.0",
  "jsonrpsee",
  "lru 0.10.0",
@@ -16181,6 +16183,25 @@ dependencies = [
  "tokio",
  "tracing",
  "typed-store",
+]
+
+[[package]]
+name = "sui-trace-server"
+version = "1.46.0"
+dependencies = [
+ "anyhow",
+ "axum 0.7.5",
+ "axum-server",
+ "mysten-metrics",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "sui-replay",
+ "telemetry-subscribers",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
