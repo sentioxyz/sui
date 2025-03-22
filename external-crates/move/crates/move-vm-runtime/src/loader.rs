@@ -1691,6 +1691,14 @@ impl<'a> Resolver<'a> {
         self.loader.type_to_fully_annotated_layout(ty)
     }
 
+    pub(crate) fn type_to_fully_annotated_layout_type_args(
+        &self,
+        ty: &Type,
+        ty_args: &[Type],
+    ) -> PartialVMResult<A::MoveTypeLayout> {
+        self.loader.type_to_fully_annotated_layout_type_args(ty, ty_args)
+    }
+
     // get the loader
     pub(crate) fn loader(&self) -> &Loader {
         self.loader
@@ -2626,6 +2634,56 @@ impl Loader {
         Ok(ty)
     }
 
+    fn type_to_type_layout_type_args_impl(
+        &self,
+        ty: &Type,
+        count: &mut u64,
+        depth: u64,
+        ty_args: &[Type]
+    ) -> PartialVMResult<R::MoveTypeLayout> {
+        if *count > HISTORICAL_MAX_TYPE_TO_LAYOUT_NODES {
+            return Err(PartialVMError::new(StatusCode::TOO_MANY_TYPE_NODES));
+        }
+        if depth > VALUE_DEPTH_MAX {
+            return Err(PartialVMError::new(StatusCode::VM_MAX_VALUE_DEPTH_REACHED));
+        }
+        *count += 1;
+        Ok(match ty {
+            Type::Bool => R::MoveTypeLayout::Bool,
+            Type::U8 => R::MoveTypeLayout::U8,
+            Type::U16 => R::MoveTypeLayout::U16,
+            Type::U32 => R::MoveTypeLayout::U32,
+            Type::U64 => R::MoveTypeLayout::U64,
+            Type::U128 => R::MoveTypeLayout::U128,
+            Type::U256 => R::MoveTypeLayout::U256,
+            Type::Address => R::MoveTypeLayout::Address,
+            Type::Signer => R::MoveTypeLayout::Signer,
+            Type::Vector(ty) => R::MoveTypeLayout::Vector(Box::new(
+                self.type_to_type_layout_impl(ty, count, depth + 1)?,
+            )),
+            Type::Datatype(gidx) => self
+                .type_gidx_to_type_layout(*gidx, &[], count, depth)?
+                .into_layout(),
+            Type::DatatypeInstantiation(struct_inst) => {
+                let (gidx, init_ty_args) = &**struct_inst;
+                // map ty_args to types if the type is tyParam
+                let new_init_ty_args = init_ty_args.iter().map(|ty| {
+                    match ty {
+                        Type::TyParam(typ) => ty_args[*typ as usize].clone(),
+                        _ => ty.clone()
+                    }
+                }).collect::<Vec<_>>();
+                self.type_gidx_to_type_layout(*gidx, &new_init_ty_args, count, depth)?.into_layout()
+            },
+            Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(format!("no type layout for {:?}", ty)),
+                );
+            }
+        })
+    }
+
     fn datatype_gidx_to_fully_annotated_layout(
         &self,
         gidx: CachedTypeIndex,
@@ -2770,6 +2828,56 @@ impl Loader {
         Ok(annotated_type_layout)
     }
 
+    fn type_to_fully_annotated_layout_type_args_impl(
+        &self,
+        ty: &Type,
+        count: &mut u64,
+        depth: u64,
+        ty_args : &[Type],
+    ) -> PartialVMResult<A::MoveTypeLayout> {
+        if *count > HISTORICAL_MAX_TYPE_TO_LAYOUT_NODES {
+            return Err(PartialVMError::new(StatusCode::TOO_MANY_TYPE_NODES));
+        }
+        if depth > VALUE_DEPTH_MAX {
+            return Err(PartialVMError::new(StatusCode::VM_MAX_VALUE_DEPTH_REACHED));
+        }
+        *count += 1;
+        Ok(match ty {
+            Type::Bool => A::MoveTypeLayout::Bool,
+            Type::U8 => A::MoveTypeLayout::U8,
+            Type::U16 => A::MoveTypeLayout::U16,
+            Type::U32 => A::MoveTypeLayout::U32,
+            Type::U64 => A::MoveTypeLayout::U64,
+            Type::U128 => A::MoveTypeLayout::U128,
+            Type::U256 => A::MoveTypeLayout::U256,
+            Type::Address => A::MoveTypeLayout::Address,
+            Type::Signer => A::MoveTypeLayout::Signer,
+            Type::Vector(ty) => A::MoveTypeLayout::Vector(Box::new(
+                self.type_to_fully_annotated_layout_impl(ty, count, depth + 1)?,
+            )),
+            Type::Datatype(gidx) => self
+                .datatype_gidx_to_fully_annotated_layout(*gidx, &[], count, depth)?
+                .into_layout(),
+            Type::DatatypeInstantiation(struct_inst) => {
+                let (gidx, init_ty_args) = &**struct_inst;
+                // map ty_args to types if the type is tyParam
+                let new_init_ty_args = init_ty_args.iter().map(|ty| {
+                    match ty {
+                        Type::TyParam(typ) => ty_args[*typ as usize].clone(),
+                        _ => ty.clone()
+                    }
+                }).collect::<Vec<_>>();
+                self.datatype_gidx_to_fully_annotated_layout(*gidx, &new_init_ty_args, count, depth)?.into_layout()
+            },
+            Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(format!("no type layout for {:?}", ty)),
+                );
+            }
+        })
+    }
+
     pub(crate) fn type_to_type_tag(&self, ty: &Type) -> PartialVMResult<TypeTag> {
         self.type_to_type_tag_impl(ty, DatatypeTagType::Defining)
     }
@@ -2783,12 +2891,26 @@ impl Loader {
         self.type_to_type_layout_impl(ty, &mut count, 1)
     }
 
+    pub(crate) fn type_to_type_layout_type_args(&self, ty: &Type, ty_args:  &[Type]) -> PartialVMResult<R::MoveTypeLayout> {
+        let mut count = 0;
+        self.type_to_type_layout_type_args_impl(ty, &mut count, 1, ty_args)
+    }
+
     pub(crate) fn type_to_fully_annotated_layout(
         &self,
         ty: &Type,
     ) -> PartialVMResult<A::MoveTypeLayout> {
         let mut count = 0;
         self.type_to_fully_annotated_layout_impl(ty, &mut count, 1)
+    }
+
+    pub(crate) fn type_to_fully_annotated_layout_type_args(
+        &self,
+        ty: &Type,
+        ty_args: &[Type],
+    ) -> PartialVMResult<A::MoveTypeLayout> {
+        let mut count = 0;
+        self.type_to_fully_annotated_layout_type_args_impl(ty, &mut count, 1, ty_args)
     }
 
     fn validate_count(&self, count: &u64) -> PartialVMResult<()> {

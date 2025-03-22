@@ -59,7 +59,7 @@ macro_rules! define_index {
     } => {
         define_index!(internal $name, $kind);
 
-        #[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
         #[cfg_attr(any(test, feature = "fuzzing"), derive(proptest_derive::Arbitrary))]
         #[cfg_attr(any(test, feature = "fuzzing"), proptest(no_params))]
         #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
@@ -74,7 +74,7 @@ macro_rules! define_index {
         bounds: $max: literal,
     } => {
         define_index!(internal $name, $kind);
-        #[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
         #[cfg_attr(any(test, feature = "fuzzing"), derive(proptest_derive::Arbitrary))]
         #[cfg_attr(any(test, feature = "fuzzing"), proptest(no_params))]
         #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]

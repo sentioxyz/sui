@@ -143,16 +143,15 @@ impl BuiltInFramework {
                 "deepbook",
                 [MOVE_STDLIB_PACKAGE_ID, SUI_FRAMEWORK_PACKAGE_ID]
             ),
-            (
-                BRIDGE_PACKAGE_ID,
-                "Bridge",
-                "bridge",
-                [
-                    MOVE_STDLIB_PACKAGE_ID,
-                    SUI_FRAMEWORK_PACKAGE_ID,
-                    SUI_SYSTEM_PACKAGE_ID
-                ]
-            )
+            // (
+            //     BRIDGE_PACKAGE_ID,
+            //     "Bridge",
+            //     [
+            //         MOVE_STDLIB_PACKAGE_ID,
+            //         SUI_FRAMEWORK_PACKAGE_ID,
+            //         SUI_SYSTEM_PACKAGE_ID
+            //     ]
+            // )
         ])
         .iter()
     }
