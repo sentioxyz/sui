@@ -36,6 +36,7 @@ sui-macros.workspace = true
 sui-protocol-config.workspace = true
 sui-types.workspace = true
 parking_lot.workspace = true
+serde_json.workspace = true
 
 [features]
 tracing = [
