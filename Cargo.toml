@@ -185,6 +185,7 @@ members = [
   "crates/sui-test-validator",
   "crates/sui-tls",
   "crates/sui-tool",
+  "crates/sui-trace-server",
   "crates/sui-transaction-builder",
   "crates/sui-transaction-checks",
   "crates/sui-transactional-test-runner",
