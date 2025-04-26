@@ -23,13 +23,13 @@ mod checked {
         errors::{Location, PartialVMResult, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, LocalIndex, Visibility},
         file_format_common::VERSION_6,
-        normalized,
+        normalized, CompiledModule,
+        call_trace::{CallTraces, InternalCallTrace, InputValue},
     };
-    use move_core_types::language_storage::StructTag;
     use move_core_types::{
         account_address::AccountAddress,
         identifier::{IdentStr, Identifier},
-        language_storage::{ModuleId, TypeTag},
+        language_storage::{ModuleId, StructTag, TypeTag},
         u256::U256,
     };
     use move_trace_format::format::MoveTraceBuilder;
@@ -77,6 +77,11 @@ mod checked {
         private_generics::{EVENT_MODULE, PRIVATE_TRANSFER_FUNCTIONS, TRANSFER_MODULE},
     };
     use tracing::instrument;
+
+    use crate::adapter::substitute_package_id;
+    use crate::programmable_transactions::context::*;
+    use move_core_types::annotated_value as A;
+    use move_core_types::annotated_value::MoveStruct;
 
     pub fn execute<Mode: ExecutionMode>(
         protocol_config: &ProtocolConfig,
@@ -135,6 +140,10 @@ mod checked {
             if let Err(err) =
                 execute_command::<Mode>(&mut context, &mut mode_results, command, trace_builder_opt)
             {
+                if Mode::get_call_trace() {
+                    // break here
+                    break;
+                }
                 let object_runtime: &ObjectRuntime = context.object_runtime()?;
                 // We still need to record the loaded child objects for replay
                 let loaded_runtime_objects = object_runtime.loaded_runtime_objects();
@@ -175,7 +184,7 @@ mod checked {
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> Result<(), ExecutionError> {
         let mut argument_updates = Mode::empty_arguments();
-        let results = match command {
+        let (results, trace_results) = match command {
             Command::MakeMoveVec(tag_opt, args) if args.is_empty() => {
                 let Some(tag) = tag_opt else {
                     invariant_violation!(
@@ -197,14 +206,17 @@ mod checked {
                 let abilities = context.get_type_abilities(&ty)?;
                 // BCS layout for any empty vector should be the same
                 let bytes = bcs::to_bytes::<Vec<u8>>(&vec![]).unwrap();
-                vec![Value::Raw(
-                    RawValueType::Loaded {
-                        ty,
-                        abilities,
-                        used_in_non_entry_move_call: false,
-                    },
-                    bytes,
-                )]
+                (
+                    vec![Value::Raw(
+                        RawValueType::Loaded {
+                            ty,
+                            abilities,
+                            used_in_non_entry_move_call: false,
+                        },
+                        bytes,
+                    )],
+                    None
+                )
             }
             Command::MakeMoveVec(tag_opt, args) => {
                 let args = context.splat_args(0, args)?;
@@ -252,14 +264,17 @@ mod checked {
                 }
                 let ty = Type::Vector(Box::new(elem_ty));
                 let abilities = context.get_type_abilities(&ty)?;
-                vec![Value::Raw(
-                    RawValueType::Loaded {
-                        ty,
-                        abilities,
-                        used_in_non_entry_move_call,
-                    },
-                    res,
-                )]
+                (
+                    vec![Value::Raw(
+                        RawValueType::Loaded {
+                            ty,
+                            abilities,
+                            used_in_non_entry_move_call,
+                        },
+                        res,
+                    )],
+                    None
+                )
             }
             Command::TransferObjects(objs, addr_arg) => {
                 let unsplat_objs_len = objs.len();
@@ -272,11 +287,72 @@ mod checked {
                     .collect::<Result<_, _>>()?;
                 let addr: SuiAddress =
                     context.by_value_arg(CommandKind::TransferObjects, objs.len(), addr_arg)?;
-                for obj in objs {
+                for obj in objs.clone() {
                     obj.ensure_public_transfer_eligible()?;
                     context.transfer_object(obj, addr)?;
                 }
-                vec![]
+                if Mode::get_call_trace() {
+                    let mut call_traces = CallTraces::new();
+                    let mut inputs = vec![];
+                    for obj in objs {
+                        let input = match obj.contents {
+                            ObjectContents::Coin(coin) => {
+                                let tag = context
+                                    .vm
+                                    .get_runtime()
+                                    .get_type_tag(&obj.type_).unwrap();
+                                // if tag is a struct type tag
+                                if let TypeTag::Struct(struct_tag) = tag {
+                                    let move_value = A::MoveValue::Struct(
+                                        MoveStruct::new(
+                                            *struct_tag.clone(),
+                                            vec![
+                                                (
+                                                    ident_str!("id").to_owned(),
+                                                    A::MoveValue::Address(AccountAddress::from(
+                                                        coin.id.object_id().to_owned(),
+                                                    )),
+                                                ),
+                                                (
+                                                    ident_str!("balance").to_owned(),
+                                                    A::MoveValue::U64(coin.balance.value()),
+                                                ),
+                                            ],
+                                        ),
+                                    );
+                                    InputValue::MoveValue(move_value)
+                                } else {
+                                    InputValue::String(serde_json::to_string(&coin).unwrap())
+                                }
+                            }
+                            ObjectContents::Raw(raw) => {
+                                InputValue::String(serde_json::to_string(&raw).unwrap())
+                            }
+                        };
+
+                        inputs.push(input);
+                    }
+                    inputs.push(InputValue::MoveValue(A::MoveValue::Address(AccountAddress::from(addr))));
+                    let call_trace = InternalCallTrace {
+                        pc: 0,
+                        from_module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+                        module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+                        func_name: "transfer_objects".to_string(),
+                        inputs,
+                        outputs: vec![],
+                        type_args: vec![],
+                        sub_traces: CallTraces::new(),
+                        fdef_idx: 0,
+                        error: None,
+                    };
+                    call_traces.push(call_trace).expect("Failed to push call trace");
+                    (vec![], Some(call_traces))
+                } else {
+                    (
+                        vec![],
+                        None
+                    )
+                }
             }
             Command::SplitCoins(coin_arg, amount_args) => {
                 let coin_arg = context.one_arg(0, coin_arg)?;
@@ -305,7 +381,10 @@ mod checked {
                     })
                     .collect::<Result<_, ExecutionError>>()?;
                 context.restore_arg::<Mode>(&mut argument_updates, coin_arg, Value::Object(obj))?;
-                split_coins
+                (
+                    split_coins,
+                    None
+                )
             }
             Command::MergeCoins(target_arg, coin_args) => {
                 let target_arg = context.one_arg(0, target_arg)?;
@@ -347,7 +426,10 @@ mod checked {
                     target_arg,
                     Value::Object(target),
                 )?;
-                vec![]
+                (
+                    vec![],
+                    None
+                )
             }
             Command::MoveCall(move_call) => {
                 let ProgrammableMoveCall {
@@ -375,41 +457,74 @@ mod checked {
                 let original_address = context.set_link_context(package)?;
                 let storage_id = ModuleId::new(*package, module.clone());
                 let runtime_id = ModuleId::new(original_address, module);
-                let return_values = execute_move_call::<Mode>(
+                if Mode::get_call_trace() {
+                    let (return_values, call_traces) = get_move_call_trace::<Mode>(
+                        context,
+                        &mut argument_updates,
+                        &runtime_id,
+                        &runtime_id,
+                        &function,
+                        loaded_type_arguments.clone(),
+                        arguments.clone(),
+                        /* is_init */ false,
+                    )?;
+
+                    context.linkage_view.reset_linkage();
+
+                    // if the return values are an error, we need to return the call traces
+                    if return_values.is_err() {
+                        Mode::finish_command(
+                            context,
+                            mode_results,
+                            Mode::empty_arguments(),
+                            Vec::new().as_slice(),
+                            &Some(call_traces.clone()),
+                        )?;
+                    }
+                    (return_values?, Some(call_traces))
+                } else {
+                    let return_values = execute_move_call::<Mode>(
+                        context,
+                        &mut argument_updates,
+                        &storage_id,
+                        &runtime_id,
+                        &function,
+                        loaded_type_arguments,
+                        arguments,
+                        /* is_init */ false,
+                        trace_builder_opt,
+                    );
+
+                    context.linkage_view.reset_linkage();
+                    (return_values?, None)
+                }
+            }
+            Command::Publish(modules, dep_ids) => (
+                execute_move_publish::<Mode>(
                     context,
                     &mut argument_updates,
-                    &storage_id,
-                    &runtime_id,
-                    &function,
-                    loaded_type_arguments,
-                    arguments,
-                    /* is_init */ false,
-                    trace_builder_opt,
-                );
-
-                context.linkage_view.reset_linkage()?;
-                return_values?
-            }
-            Command::Publish(modules, dep_ids) => execute_move_publish::<Mode>(
-                context,
-                &mut argument_updates,
-                modules,
-                dep_ids,
-                trace_builder_opt,
-            )?,
-            Command::Upgrade(modules, dep_ids, current_package_id, upgrade_ticket) => {
-                let upgrade_ticket = context.one_arg(0, upgrade_ticket)?;
-                execute_move_upgrade::<Mode>(
-                    context,
                     modules,
                     dep_ids,
-                    current_package_id,
-                    upgrade_ticket,
-                )?
+                    trace_builder_opt,
+                )?,
+                None
+            ),
+            Command::Upgrade(modules, dep_ids, current_package_id, upgrade_ticket) => {
+                let upgrade_ticket = context.one_arg(0, upgrade_ticket)?;
+                (
+                    execute_move_upgrade::<Mode>(
+                        context,
+                        modules,
+                        dep_ids,
+                        current_package_id,
+                        upgrade_ticket,
+                    )?,
+                    None
+                )
             }
         };
 
-        Mode::finish_command(context, mode_results, argument_updates, &results)?;
+        Mode::finish_command(context, mode_results, argument_updates, &results, &trace_results)?;
         context.push_command_results(results)?;
         Ok(())
     }
@@ -488,6 +603,97 @@ mod checked {
 
         context.linkage_view.restore_linkage(saved_linkage)?;
         res
+    }
+
+    /// Execute a move call and get the call trace
+    fn get_move_call_trace<Mode: ExecutionMode>(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        argument_updates: &mut Mode::ArgumentUpdates,
+        storage_id: &ModuleId,
+        runtime_id: &ModuleId,
+        function: &IdentStr,
+        type_arguments: Vec<Type>,
+        arguments: Vec<Arg>,
+        is_init: bool,
+    ) -> Result<(Result<Vec<Value>, ExecutionError>, CallTraces), ExecutionError> {
+        // check that the function is either an entry function or a valid public function
+        let LoadedFunctionInfo {
+            kind,
+            signature,
+            return_value_kinds,
+            index,
+            last_instr,
+        } = check_visibility_and_signature::<Mode>(
+            context,
+            runtime_id,
+            function,
+            &type_arguments,
+            is_init,
+        )?;
+        // build the arguments, storing meta data about by-mut-ref args
+        let (tx_context_kind, by_mut_ref, serialized_arguments) = build_move_args::<Mode>(
+            context,
+            runtime_id,
+            function,
+            kind,
+            &signature,
+            &arguments,
+        )?;
+        // invoke the VM and get the call traces
+        let (
+            serialized_return_values,
+            call_traces,
+        ) = vm_move_call_trace(
+            context,
+            runtime_id,
+            function,
+            type_arguments,
+            tx_context_kind,
+            serialized_arguments,
+        )?;
+
+        match serialized_return_values {
+            Ok(serialized_return_values) => {
+                let SerializedReturnValues {
+                    mutable_reference_outputs,
+                    return_values,
+                } = serialized_return_values;
+
+                assert_invariant!(
+                    by_mut_ref.len() == mutable_reference_outputs.len(),
+                    "lost mutable input"
+                );
+
+                if context.protocol_config.relocate_event_module() {
+                    context.take_user_events(storage_id, index, last_instr)?;
+                } else {
+                    context.take_user_events(runtime_id, index, last_instr)?;
+                }
+
+                // save the link context because calls to `make_value` below can set new ones, and we don't want
+                // it to be clobbered.
+                let saved_linkage = context.linkage_view.steal_linkage();
+                // write back mutable inputs. We also update if they were used in non entry Move calls
+                // though we do not care for immutable usages of objects or other values
+                let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
+                let res = write_back_results::<Mode>(
+                    context,
+                    argument_updates,
+                    &arguments,
+                    used_in_non_entry_move_call,
+                    mutable_reference_outputs
+                        .into_iter()
+                        .map(|(i, bytes, _layout)| (i, bytes)),
+                    by_mut_ref,
+                    return_values.into_iter().map(|(bytes, _layout)| bytes),
+                    return_value_kinds,
+                )?;
+
+                context.linkage_view.restore_linkage(saved_linkage)?;
+                Ok((Ok(res), call_traces))
+            }
+            Err(e) => Ok((Err(e), call_traces)),
+        }
     }
 
     fn write_back_results<Mode: ExecutionMode>(
@@ -906,6 +1112,51 @@ mod checked {
             context.tx_context.borrow_mut().update_state(updated_ctx)?;
         }
         Ok(result)
+    }
+
+    fn vm_move_call_trace(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        module_id: &ModuleId,
+        function: &IdentStr,
+        type_arguments: Vec<Type>,
+        tx_context_kind: TxContextKind,
+        mut serialized_arguments: Vec<Vec<u8>>,
+    ) -> Result<(Result<SerializedReturnValues, ExecutionError>, CallTraces), ExecutionError> {
+        match tx_context_kind {
+            TxContextKind::None => (),
+            TxContextKind::Mutable | TxContextKind::Immutable => {
+                serialized_arguments.push(context.tx_context.borrow().to_bcs_legacy_context());
+            }
+        }
+        // script visibility checked manually for entry points
+        let result = context
+            .call_trace(module_id, function, type_arguments, serialized_arguments)
+            .map_err(|e| context.convert_vm_error(e))?;
+
+        // When this function is used during publishing, it
+        // may be executed several times, with objects being
+        // created in the Move VM in each Move call. In such
+        // case, we need to update TxContext value so that it
+        // reflects what happened each time we call into the
+        // Move VM (e.g. to account for the number of created
+        // objects).
+        if let Ok(mut serialized_return_values) = result.0 {
+            if tx_context_kind == TxContextKind::Mutable {
+                let Some((_, ctx_bytes, _)) = serialized_return_values.mutable_reference_outputs.pop() else {
+                    invariant_violation!("Missing TxContext in reference outputs");
+                };
+                let updated_ctx: MoveLegacyTxContext = bcs::from_bytes(&ctx_bytes).map_err(|e| {
+                    ExecutionError::invariant_violation(format!(
+                        "Unable to deserialize TxContext bytes. {e}"
+                    ))
+                })?;
+                context.tx_context.borrow_mut().update_state(updated_ctx)?;
+            }
+            Ok((Ok(serialized_return_values), result.1))
+        }
+        else {
+            Ok((result.0.map_err(|e| context.convert_vm_error(e)), result.1))
+        }
     }
 
     #[allow(clippy::extra_unused_type_parameters)]
