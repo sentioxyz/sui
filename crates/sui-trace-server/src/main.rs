@@ -8,6 +8,7 @@ use axum::{
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
 use sui_replay::call_trace::CallTraceWithSource;
 
 pub const DEFAULT_PORT: u16 = 9301;
@@ -86,11 +87,16 @@ enum MyError {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct ErrorResponse {
+    error: String
+}
+
 impl IntoResponse for MyError {
     fn into_response(self) -> Response {
         let body = match self {
             MyError::SomethingWentWrong { message } => {
-                format!("Something went wrong: {}", message)
+                Json(ErrorResponse { error: message })
             }
         };
 
