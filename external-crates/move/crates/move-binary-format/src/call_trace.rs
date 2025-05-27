@@ -2,8 +2,6 @@ use std::collections::HashSet;
 use move_core_types::annotated_value as A;
 use crate::errors::VMError;
 
-const CALL_STACK_SIZE_LIMIT: usize = 1024;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputValue {
     MoveValue(A::MoveValue),
@@ -45,19 +43,15 @@ impl CallTraces {
     }
 
     pub fn push(&mut self, trace: InternalCallTrace) -> Result<(), InternalCallTrace> {
-        if self.0.len() < CALL_STACK_SIZE_LIMIT {
-            self.0.push(trace);
-            let account = self.0[self.0.len() - 1]
-                .module_id
-                .split("::")
-                .next()
-                .unwrap()
-                .to_string();
-            self.1.insert(account);
-            Ok(())
-        } else {
-            Err(trace)
-        }
+        self.0.push(trace);
+        let account = self.0[self.0.len() - 1]
+            .module_id
+            .split("::")
+            .next()
+            .unwrap()
+            .to_string();
+        self.1.insert(account);
+        Ok(())
     }
 
     pub fn pop(&mut self) -> Option<InternalCallTrace> {
