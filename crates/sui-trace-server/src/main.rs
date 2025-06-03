@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use axum::{
     extract,
@@ -15,11 +16,31 @@ pub const DEFAULT_PORT: u16 = 9301;
 
 #[derive(Clone)]
 struct AppConfig {
+    networks: HashMap<String, NetworkConfig>
+}
+
+impl AppConfig {
+    async fn new(rpc_urls: String) -> Self {
+        let chain_to_endpoint: Vec<&str> = rpc_urls.split(",").collect();
+        let mut networks: HashMap<String, NetworkConfig> = HashMap::new();
+        for i in chain_to_endpoint.iter() {
+            let t: Vec<&str> = i.split('=').collect();
+            let network = NetworkConfig::new(t[1].to_string()).await;
+            networks.insert(t[0].to_string(), network);
+        }
+        Self {
+            networks
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NetworkConfig {
     rpc_url: String,
     local_exec: sui_replay::replay::LocalExec,
 }
 
-impl AppConfig {
+impl NetworkConfig {
     async fn new(rpc_url: String) -> Self {
         Self {
             rpc_url: rpc_url.clone(),
@@ -36,16 +57,15 @@ async fn main() {
         .expect("setting default subscriber failed");
 
     // Get RPC URL from command-line arguments or use a default value
-    let rpc_url = env::args().nth(1).unwrap_or_else(|| "https://fullnode.mainnet.sui.io:443".to_string());
-    let config = AppConfig::new(rpc_url.clone()).await;
+    let rpc_urls = env::args().nth(1).unwrap_or_else(|| "sui_mainnet=https://fullnode.mainnet.sui.io:443".to_string());
+    let config = AppConfig::new(rpc_urls.clone()).await;
     // Log configuration
-    println!("RPC Url: {:?}", config.rpc_url);
+    println!("RPC Urls: {:?}", rpc_urls);
     // build our application with a single route
     println!("listening on http://localhost:{}", DEFAULT_PORT);
 
     let app = Router::new()
-        .route("/call_trace/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()))
-        .route("/call_trace/v2/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()));
+        .route("/{chain_id}/call_trace/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()));
 
     axum_server::Server::bind(format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
         .serve(app.into_make_service())
@@ -53,11 +73,15 @@ async fn main() {
 }
 
 async fn call_trace(
-    extract::Path(tx_digest): extract::Path<String>,
+    extract::Path((chain_id, tx_digest)): extract::Path<(String, String)>,
     State(config): State<AppConfig>,
 ) -> Result<Json<Option<Vec<CallTraceWithSource>>>, MyError> {
+    let conf = config.networks.get(&chain_id)
+        .ok_or(MyError::SomethingWentWrong {
+            message: format!("Network {} not found", chain_id),
+        })?;
     let trace_result = sui_replay::execute_call_trace(
-        config.local_exec.clone(),
+        conf.local_exec.clone(),
         tx_digest,
         false,
         false,
@@ -72,13 +96,6 @@ async fn call_trace(
             })
         }
     }
-}
-
-async fn call_trace_v2(
-    extract::Path(tx_digest): extract::Path<String>,
-    State(config): State<AppConfig>,
-) -> Result<Json<Option<Vec<CallTraceWithSource>>>, MyError> {
-    call_trace(extract::Path(tx_digest), State(config)).await
 }
 
 enum MyError {
