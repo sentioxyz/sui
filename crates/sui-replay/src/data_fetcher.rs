@@ -12,6 +12,7 @@ use rand::Rng;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
+use tracing::log::warn;
 use sui_core::authority::NodeStateDump;
 use sui_json_rpc_api::QUERY_MAX_RESULT_LIMIT;
 use sui_json_rpc_types::EventFilter;
@@ -587,10 +588,18 @@ impl DataFetcher for RemoteFetcher {
                 .await
                 .map_err(|e| ReplayEngineError::UnableToQuerySystemEvents {
                     rpc_err: e.to_string(),
-                })?;
-            epoch_change_events.extend(page_data.data);
-            has_next_page = page_data.has_next_page;
-            cursor = page_data.next_cursor;
+                });
+            match page_data {
+                Err(e) => {
+                    warn!("Failed to query epoch change events: {}", e);
+                    break
+                },
+                Ok(page_data) => {
+                    epoch_change_events.extend(page_data.data);
+                    has_next_page = page_data.has_next_page;
+                    cursor = page_data.next_cursor;
+                }
+            };
         }
 
         Ok(epoch_change_events)
