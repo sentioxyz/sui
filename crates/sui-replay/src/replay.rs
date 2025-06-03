@@ -1275,7 +1275,9 @@ impl LocalExec {
         &self,
     ) -> Result<BTreeMap<u64, ProtocolVersionSummary>, ReplayEngineError> {
         let mut range_map = BTreeMap::new();
-        let epoch_change_events = self.fetcher.get_epoch_change_events(false).await?;
+        let mut epoch_change_events = self.fetcher.get_epoch_change_events(true).await?;
+        epoch_change_events.reverse();
+        info!("Found {} epoch change events", epoch_change_events.len());
 
         // Exception for Genesis: Protocol version 1 at epoch 0
         let mut tx_digest = *self
