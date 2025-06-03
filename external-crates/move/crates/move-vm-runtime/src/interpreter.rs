@@ -416,7 +416,9 @@ impl Interpreter {
                 .map_err(|e| self.set_location(e))?;
             args_1.push(value);
         }
-        let link_context = data_store.link_context();
+        let link_context = data_store
+            .link_context()
+            .map_err(|e| e.finish(Location::Undefined))?;
         let mut current_frame = self
             .make_new_frame(function, ty_args.clone(), locals)
             .map_err(|err| self.set_location(err))?;

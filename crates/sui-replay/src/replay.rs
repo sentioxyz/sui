@@ -20,7 +20,7 @@ use move_bytecode_utils::module_cache::GetModule;
 use move_core_types::{
     account_address::AccountAddress,
     language_storage::{ModuleId, StructTag},
-    resolver::{ModuleResolver, ResourceResolver},
+    resolver::ModuleResolver,
 };
 use prometheus::Registry;
 use serde::{Deserialize, Serialize};
