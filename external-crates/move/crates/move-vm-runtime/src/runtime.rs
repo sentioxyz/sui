@@ -659,7 +659,7 @@ impl VMRuntime {
         // load the function
         let LoadedFunctionInstantiation {
             parameters,
-            return_,
+            return_, ..
         } = function_instantiation;
 
         let arg_types = parameters

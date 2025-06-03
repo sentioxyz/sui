@@ -23,7 +23,6 @@ mod checked {
     };
     use indexmap::IndexSet;
     use move_binary_format::{
-        CompiledModule,
         errors::{Location, PartialVMError, VMError, VMResult},
         file_format::{AbilitySet, CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
         CompiledModule,
@@ -31,7 +30,6 @@ mod checked {
     };
     use move_core_types::gas_algebra::NumBytes;
     use move_core_types::resolver::ModuleResolver;
-    use move_core_types::vm_status::StatusCode;
     use move_core_types::{
         account_address::AccountAddress,
         identifier::IdentStr,
@@ -726,6 +724,7 @@ mod checked {
                     created_object_ids: BTreeSet::new(),
                     deleted_object_ids: BTreeSet::new(),
                     user_events: Vec::new(),
+                    accumulator_events: Vec::new(),
                 }));
             }
             let Self {

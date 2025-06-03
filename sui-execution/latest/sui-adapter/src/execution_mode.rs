@@ -458,4 +458,14 @@ impl ExecutionMode for DevCallTrace {
         }
         Ok(())
     }
+
+    const TRACK_EXECUTION: bool = false;
+
+    fn add_argument_update_v2(acc: &mut Self::ArgumentUpdates, arg: Argument, bytes: Vec<u8>, type_: TypeTag) -> Result<(), ExecutionError> {
+        todo!()
+    }
+
+    fn finish_command_v2(acc: &mut Self::ExecutionResults, argument_updates: Vec<(Argument, Vec<u8>, TypeTag)>, command_result: Vec<(Vec<u8>, TypeTag)>) -> Result<(), ExecutionError> {
+        todo!()
+    }
 }

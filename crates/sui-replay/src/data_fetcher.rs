@@ -582,7 +582,7 @@ impl DataFetcher for RemoteFetcher {
                 .query_events(
                     EventFilter::MoveEventType(struct_tag.clone()),
                     cursor,
-                    None,
+                    Some(10), // smaller page size to retrieve events for testnet as many as possible
                     reverse,
                 )
                 .await

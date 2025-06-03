@@ -31,15 +31,10 @@ mod checked {
         errors::{Location, PartialVMResult, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, LocalIndex, Visibility},
         file_format_common::VERSION_6,
-        normalized, CompiledModule,
+        normalized,
         call_trace::{CallTraces, InternalCallTrace, InputValue},
     };
-    use move_core_types::{
-        account_address::AccountAddress,
-        identifier::{IdentStr, Identifier},
-        language_storage::{ModuleId, StructTag, TypeTag},
-        u256::U256,
-    };
+    use move_core_types::{account_address::AccountAddress, ident_str, identifier::{IdentStr, Identifier}, language_storage::{ModuleId, StructTag, TypeTag}, u256::U256};
     use move_trace_format::format::MoveTraceBuilder;
     use move_vm_runtime::{
         move_vm::MoveVM,
@@ -86,7 +81,6 @@ mod checked {
     };
     use tracing::instrument;
 
-    use crate::adapter::substitute_package_id;
     use crate::programmable_transactions::context::*;
     use move_core_types::annotated_value as A;
     use move_core_types::annotated_value::MoveStruct;

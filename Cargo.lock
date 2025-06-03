@@ -16311,7 +16311,7 @@ dependencies = [
 
 [[package]]
 name = "sui-trace-server"
-version = "1.49.0"
+version = "1.51.5"
 dependencies = [
  "anyhow",
  "axum 0.8.3",
