@@ -38,6 +38,7 @@ use smallvec::SmallVec;
 
 use crate::native_extensions::NativeContextExtensions;
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
+use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex};
 use move_vm_profiler::{profile_close_frame, profile_open_frame};
 use tracing::error;
 
@@ -390,6 +391,23 @@ impl Interpreter {
         }
     }
 
+    fn transform_error(
+        loader: &Loader,
+        data_store: &mut impl DataStore,
+        err: VMError,
+    ) -> (VMError, Option<(String, CodeOffset)>) {
+        if let Location::Module(module_id) = err.location() {
+            let (compiled_module, _) = loader.load_module(module_id, data_store).unwrap();
+            if let Some((fdef_idx, code_offset)) = err.clone().offsets().first() {
+                let fdef = compiled_module.function_def_at(*fdef_idx);
+                let fhandle = compiled_module.function_handle_at(fdef.function);
+                let fname = compiled_module.identifier_at(fhandle.name).to_string();
+                return (err, Some((fname, *code_offset)))
+            }
+        }
+        (err, None)
+    }
+
     fn call_trace_internal(
         mut self,
         loader: &Loader,
@@ -569,7 +587,7 @@ impl Interpreter {
                     if func.is_native() {
                         self.call_native(
                             &resolver, gas_meter, extensions, func, vec![]
-                        ).map_err(|e| call_traces.set_error(e));
+                        ).map_err(|e| call_traces.set_error(Self::transform_error(loader, data_store, e)));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
 
                         profile_close_frame!(gas_meter, func_name);
@@ -665,7 +683,7 @@ impl Interpreter {
                     if func.is_native() {
                         self.call_native(
                             &resolver, gas_meter, extensions, func, ty_args
-                        ).map_err(|e| call_traces.set_error(e));
+                        ).map_err(|e| call_traces.set_error(Self::transform_error(loader, data_store, e)));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
 
                         profile_close_frame!(gas_meter, func_name);
@@ -744,7 +762,7 @@ impl Interpreter {
                     current_frame = frame;
                 }
                 Err(err) => {
-                    call_traces.set_error(err);
+                    call_traces.set_error(Self::transform_error(loader, data_store, err));
                     while let Some(_) = self.call_stack.pop() {
                         let top_call = call_traces.pop().unwrap();
                         call_traces.push_call_trace(top_call);

@@ -1,9 +1,12 @@
-use move_binary_format::call_trace::InternalCallTrace;
+use move_binary_format::call_trace::{InternalCallTrace, InternalCallTraceError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
 
 use crate::converter::{input_value_to_json, move_value_to_json};
+use move_binary_format::errors::Location as MoveLoc;
+use move_binary_format::file_format::CodeOffset;
+use move_core_types::language_storage::ModuleId;
 
 /// A call trace with source
 ///
@@ -31,26 +34,12 @@ pub struct CallTraceError {
     pub major_status: String,
     pub sub_status: Option<u64>,
     pub message: Option<String>,
-    pub location: Option<String>,
+    pub location: Option<ModuleId>,
+    pub function_name: Option<String>,
+    pub code_offset: Option<CodeOffset>,
 }
 
 impl CallTraceWithSource {
-    pub fn default() -> Self {
-        CallTraceWithSource {
-            from: "".to_string(),
-            to: "".to_string(),
-            contract_name: "".to_string(),
-            function_name: "".to_string(),
-            inputs: vec![],
-            return_value: vec![],
-            type_args: vec![],
-            calls: vec![],
-            location: None,
-            pc: 0,
-            error: None,
-        }
-    }
-
     pub fn from(call_trace: InternalCallTrace, trace_v2: bool) -> Self {
         let mut split_module = call_trace.from_module_id.split("::");
         let account = split_module.next();
@@ -90,12 +79,18 @@ impl CallTraceWithSource {
             location: None,
             pc: call_trace.pc,
             error: {
-                if let Some(vm_error) = call_trace.error {
+                if let Some(InternalCallTraceError{vm_error, function_name, code_offset}) = call_trace.error {
                     Some(CallTraceError {
                         major_status: vm_error.major_status().to_string(),
                         sub_status: vm_error.sub_status(),
                         message: vm_error.message().cloned(),
-                        location: Some(serde_json::to_string(vm_error.location()).unwrap_or_default()),
+                        location: if let MoveLoc::Module(module_id) = vm_error.location() {
+                            Some(module_id.clone())
+                        } else {
+                            None
+                        },
+                        function_name,
+                        code_offset,
                     })
                 } else {
                     None

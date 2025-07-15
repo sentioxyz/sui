@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use move_core_types::annotated_value as A;
 use crate::errors::VMError;
+use crate::file_format::CodeOffset;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputValue {
@@ -22,7 +23,14 @@ pub struct InternalCallTrace {
     pub type_args: Vec<String>,
     pub sub_traces: CallTraces,
     pub fdef_idx: u16,
-    pub error: Option<VMError>,
+    pub error: Option<InternalCallTraceError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InternalCallTraceError {
+    pub vm_error: VMError,
+    pub function_name: Option<String>,
+    pub code_offset: Option<CodeOffset>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,9 +71,14 @@ impl CallTraces {
         self.0[length - 1].outputs = outputs
     }
 
-    pub fn set_error(&mut self, error: VMError) {
+    pub fn set_error(&mut self, error: (VMError, Option<(String, CodeOffset)>)) {
         let length = self.0.len();
-        self.0[length - 1].error = Some(error)
+        let (vm_error, offset) = error;
+        self.0[length - 1].error = Some(InternalCallTraceError {
+            vm_error,
+            function_name: offset.clone().map_or(None, |t| Some(t.0)),
+            code_offset: offset.map_or(None, |t| Some(t.1)),
+        })
     }
 
     pub fn push_call_trace(&mut self, call_trace: InternalCallTrace) {
