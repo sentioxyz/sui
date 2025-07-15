@@ -1,5 +1,4 @@
 use move_binary_format::call_trace::InternalCallTrace;
-use move_binary_format::errors::VMError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
@@ -29,10 +28,10 @@ pub struct CallTraceWithSource {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CallTraceError {
-    pub major_status: move_core_types::vm_status::StatusCode,
+    pub major_status: String,
     pub sub_status: Option<u64>,
     pub message: Option<String>,
-    pub location: Option<Location>,
+    pub location: Option<String>,
 }
 
 impl CallTraceWithSource {
@@ -93,10 +92,10 @@ impl CallTraceWithSource {
             error: {
                 if let Some(vm_error) = call_trace.error {
                     Some(CallTraceError {
-                        major_status: vm_error.major_status(),
+                        major_status: vm_error.major_status().to_string(),
                         sub_status: vm_error.sub_status(),
                         message: vm_error.message().cloned(),
-                        location: None, // TODO
+                        location: Some(serde_json::to_string(vm_error.location()).unwrap_or_default()),
                     })
                 } else {
                     None
