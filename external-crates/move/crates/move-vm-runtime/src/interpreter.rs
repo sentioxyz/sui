@@ -491,6 +491,7 @@ impl Interpreter {
             let err = set_err_info!(current_frame, err);
             self.maybe_core_dump(err, &current_frame)
         })?;
+
         loop {
             let resolver = current_frame.resolver(link_context, loader);
             let exit_code = current_frame //self
@@ -509,6 +510,18 @@ impl Interpreter {
                         .charge_drop_frame(non_ref_vals.iter())
                         .map_err(|e| self.set_location(e))?;
 
+                    close_frame!(
+                        tracer,
+                        &current_frame,
+                        &current_frame.function,
+                        &self,
+                        &loader,
+                        gas_meter,
+                        link_context,
+                        None
+                    );
+
+                    // set outputs in call trace
                     let mut outputs = vec![];
                     for val in self
                         .operand_stack
@@ -518,7 +531,6 @@ impl Interpreter {
                         outputs.push((*val).copy_value().unwrap());
                     }
 
-                    // Load the current function
                     let (_, _, _, loaded_func) = loader.load_function(
                         current_frame.function.module_id(),
                         &IdentStr::new(current_frame.function.name()).unwrap(),
@@ -566,40 +578,23 @@ impl Interpreter {
                 }
                 Ok(ExitCode::Call(fh_idx)) => {
                     let func = resolver.function_from_handle(fh_idx);
-                    // Compiled out in release mode
-                    #[cfg(debug_assertions)]
-                    let func_name = func.pretty_string();
-                    profile_open_frame!(gas_meter, func_name.clone());
+                    open_frame!(
+                        tracer,
+                        &[],
+                        &func,
+                        &current_frame,
+                        &self,
+                        &loader,
+                        gas_meter,
+                        link_context
+                    );
 
-                    // Charge gas
                     let module_id = func.module_id();
-                    gas_meter
-                        .charge_call(
-                            module_id,
-                            func.name(),
-                            self.operand_stack
-                                .last_n(func.arg_count())
-                                .map_err(|e| set_err_info!(current_frame, e))?,
-                            (func.local_count() as u64).into(),
-                        )
-                        .map_err(|e| set_err_info!(current_frame, e))?;
-
-                    if func.is_native() {
-                        self.call_native(
-                            &resolver, gas_meter, extensions, func, vec![]
-                        ).map_err(|e| call_traces.set_error(Self::transform_error(loader, data_store, e)));
-                        current_frame.pc += 1; // advance past the Call instruction in the caller
-
-                        profile_close_frame!(gas_meter, func_name);
-                        continue;
-                    }
 
                     let mut inputs = vec![];
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-
-                    // Load the current function
                     let (_, _, _, loaded_func) = loader.load_function(
                         func.module_id(),
                         &IdentStr::new(func.name()).unwrap(),
@@ -643,6 +638,55 @@ impl Interpreter {
                         let err = set_err_info!(current_frame, err);
                         self.maybe_core_dump(err, &current_frame)
                     })?;
+
+                    // Charge gas
+                    gas_meter
+                        .charge_call(
+                            module_id,
+                            func.name(),
+                            self.operand_stack
+                                .last_n(func.arg_count())
+                                .map_err(|e| set_err_info!(current_frame, e))?,
+                            (func.local_count() as u64).into(),
+                        )
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+
+                    if func.is_native() {
+                        let func_clone = func.clone();
+                        // Defer the error handling until we can trace the closure of the frame.
+                        let deferred_err =
+                            self.call_native(&resolver, gas_meter, extensions, func, vec![]);
+                                // .map_err(|e| {
+                                //     call_traces.set_error(Self::transform_error(loader, data_store, e.clone()));
+                                //     e
+                                // });
+
+                        close_frame!(
+                            tracer,
+                            &current_frame,
+                            &func_clone,
+                            &self,
+                            &loader,
+                            gas_meter,
+                            link_context,
+                            deferred_err.as_ref().err()
+                        );
+
+                        // Now raise the error from the `call_native` if there was one.
+                        if let Err(err) = deferred_err {
+                            call_traces.set_error(Self::transform_error(loader, data_store, err));
+                            while let Some(_) = self.call_stack.pop() {
+                                let top_call = call_traces.pop().unwrap();
+                                call_traces.push_call_trace(top_call);
+                            }
+                            return Ok((self.operand_stack.value, call_traces));
+                        }
+
+                        current_frame.pc += 1; // advance past the Call instruction in the caller
+
+                        continue;
+                    }
+
                     let frame = self
                         .make_call_frame(loader, func, vec![])
                         .map_err(|e| self.set_location(e))
@@ -661,41 +705,23 @@ impl Interpreter {
                         .instantiate_generic_function(idx, current_frame.ty_args())
                         .map_err(|e| set_err_info!(current_frame, e))?;
                     let func = resolver.function_from_instantiation(idx);
-                    // Compiled out in release mode
-                    #[cfg(debug_assertions)]
-                    let func_name = func.pretty_string();
-                    profile_open_frame!(gas_meter, func_name.clone());
+                    open_frame!(
+                        tracer,
+                        &ty_args,
+                        &func,
+                        &current_frame,
+                        &self,
+                        &loader,
+                        gas_meter,
+                        link_context
+                    );
 
-                    // Charge gas
                     let module_id = func.module_id();
-                    gas_meter
-                        .charge_call_generic(
-                            module_id,
-                            func.name(),
-                            ty_args.iter().map(|ty| TypeWithLoader { ty, loader }),
-                            self.operand_stack
-                                .last_n(func.arg_count())
-                                .map_err(|e| set_err_info!(current_frame, e))?,
-                            (func.local_count() as u64).into(),
-                        )
-                        .map_err(|e| set_err_info!(current_frame, e))?;
-
-                    if func.is_native() {
-                        self.call_native(
-                            &resolver, gas_meter, extensions, func, ty_args
-                        ).map_err(|e| call_traces.set_error(Self::transform_error(loader, data_store, e)));
-                        current_frame.pc += 1; // advance past the Call instruction in the caller
-
-                        profile_close_frame!(gas_meter, func_name);
-
-                        continue;
-                    }
 
                     let mut inputs = vec![];
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    // Load the current function
                     let (_, _, _, loaded_func) = loader.load_function(
                         func.module_id(),
                         &IdentStr::new(func.name()).unwrap(),
@@ -750,6 +776,50 @@ impl Interpreter {
                         let err = set_err_info!(current_frame, err);
                         self.maybe_core_dump(err, &current_frame)
                     })?;
+
+                    // Charge gas
+                    gas_meter
+                        .charge_call_generic(
+                            module_id,
+                            func.name(),
+                            ty_args.iter().map(|ty| TypeWithLoader { ty, loader }),
+                            self.operand_stack
+                                .last_n(func.arg_count())
+                                .map_err(|e| set_err_info!(current_frame, e))?,
+                            (func.local_count() as u64).into(),
+                        )
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+
+                    if func.is_native() {
+                        let func_clone = func.clone();
+                        // Defer the error handling until we can trace the closure of the frame.
+                        let deferred_err =
+                            self.call_native(&resolver, gas_meter, extensions, func, ty_args);
+                        close_frame!(
+                            tracer,
+                            &current_frame,
+                            &func_clone,
+                            &self,
+                            &loader,
+                            gas_meter,
+                            link_context,
+                            deferred_err.as_ref().err()
+                        );
+
+                        // Now raise the error from the `call_native` if there was one.
+                        if let Err(err) = deferred_err {
+                            call_traces.set_error(Self::transform_error(loader, data_store, err));
+                            while let Some(_) = self.call_stack.pop() {
+                                let top_call = call_traces.pop().unwrap();
+                                call_traces.push_call_trace(top_call);
+                            }
+                            return Ok((self.operand_stack.value, call_traces));
+                        }
+
+                        current_frame.pc += 1; // advance past the Call instruction in the caller
+                        continue;
+                    }
+
                     let frame = self
                         .make_call_frame(loader, func, ty_args)
                         .map_err(|e| self.set_location(e))
