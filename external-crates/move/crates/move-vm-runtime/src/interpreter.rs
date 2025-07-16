@@ -38,6 +38,7 @@ use smallvec::SmallVec;
 
 use crate::native_extensions::NativeContextExtensions;
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
+use move_binary_format::call_trace::GasInfo;
 use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex};
 use move_vm_profiler::{profile_close_frame, profile_open_frame};
 use tracing::error;
@@ -65,6 +66,38 @@ macro_rules! set_err_info {
         $e.at_code_offset($frame.function.index(), $frame.pc)
             .finish($frame.location())
     }};
+}
+
+macro_rules! halt_call_trace {
+    ($self:expr, $call_traces:expr, $loader:expr, $data_store:expr, $gas_meter:expr, $err:expr) => {
+        $call_traces.set_error(Interpreter::transform_error($loader, $data_store, $err));
+        while let Some(_) = $self.call_stack.pop() {
+            $call_traces.set_gas_end(u64::from($gas_meter.remaining_gas()));
+            let top_call = $call_traces.pop().unwrap();
+            $call_traces.push_call_trace(top_call);
+        }
+        return Ok(($self.operand_stack.value, $call_traces));
+    };
+}
+
+macro_rules! set_call_trace_outputs {
+    ($self:expr, $call_traces:expr, $loader:expr, $loaded_func:expr, $ty_args:expr) => {
+        let mut outputs = vec![];
+        for val in $self
+            .operand_stack
+            .last_n($loaded_func.return_.len())
+            .unwrap()
+        {
+            outputs.push((*val).copy_value().unwrap());
+        }
+
+        $call_traces.set_outputs(
+            Interpreter::decode_move_values(
+                $loader,
+                outputs,
+                &$loaded_func.return_,
+                $ty_args));
+    };
 }
 
 enum InstrRet {
@@ -408,6 +441,63 @@ impl Interpreter {
         (err, None)
     }
 
+    fn decode_move_values(
+        loader: &Loader,
+        values: Vec<Value>,
+        types: &Vec<Type>,
+        ty_args: Option<&[Type]>,
+    ) -> Vec<Option<A::MoveValue>> {
+        if let Some(ty_args) = ty_args {
+            values.into_iter().zip(types).map(|(value, ty)| {
+                let (ty, value) = match ty {
+                    Type::TyParam(idx) => {
+                        let ty = &ty_args[*idx as usize];
+                        (ty, value)
+                    },
+                    Type::Reference(inner) | Type::MutableReference(inner) => {
+                        let ref_value: Reference = value.cast().map_err(|_err| {
+                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                "non reference value given for a reference typed return value".to_string(),
+                            )
+                        })?;
+                        let inner_value = ref_value.read_ref()?;
+                        (&**inner, inner_value)
+                    },
+                    _ => (ty, value),
+                };
+                let layout = loader.type_to_type_layout_type_args(ty, &ty_args).map_err(|_err| {
+                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                        "entry point functions cannot have non-serializable return types".to_string(),
+                    )
+                })?;
+                let annotated_layout = loader.type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
+                Ok(value.as_move_value(&layout).decorate(&annotated_layout))
+            }).map(|v: Result<A::MoveValue, PartialVMError>| v.ok()).collect()
+        } else {
+            values.into_iter().zip(types).map(|(value, ty)| {
+                let (ty, value) = match ty {
+                    Type::Reference(inner) | Type::MutableReference(inner) => {
+                        let ref_value: Reference = value.cast().map_err(|_err| {
+                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                "non reference value given for a reference typed return value".to_string(),
+                            )
+                        })?;
+                        let inner_value = ref_value.read_ref()?;
+                        (&**inner, inner_value)
+                    },
+                    _ => (ty, value),
+                };
+                let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                        "entry point functions cannot have non-serializable return types".to_string(),
+                    )
+                })?;
+                let annotated_layout = loader.type_to_fully_annotated_layout(ty)?;
+                Ok(value.as_move_value(&layout).decorate(&annotated_layout))
+            }).map(|v: Result<A::MoveValue, PartialVMError>| v.ok()).collect()
+        }
+    }
+
     fn call_trace_internal(
         mut self,
         loader: &Loader,
@@ -419,9 +509,9 @@ impl Interpreter {
         args: Vec<Value>,
         tracer: &mut Option<VMTracer<'_>>,
     ) -> VMResult<(Vec<Value>, CallTraces)> {
+        let mut call_traces = CallTraces::new();
         let mut locals = Locals::new(function.local_count());
         let mut args_1 = vec![];
-        let mut call_traces = CallTraces::new();
         for (i, value) in args.into_iter().enumerate() {
             locals
                 .store_loc(
@@ -441,7 +531,7 @@ impl Interpreter {
             .make_new_frame(function, ty_args.clone(), locals)
             .map_err(|err| self.set_location(err))?;
         // Load the current function
-        let (_, _, _, loaded_func) = loader.load_function(
+        let (_, _, _, entry_func) = loader.load_function(
             current_frame.function.module_id(),
             &IdentStr::new(current_frame.function.name()).unwrap(),
             current_frame.ty_args(),
@@ -453,38 +543,18 @@ impl Interpreter {
             fdef_idx: current_frame.function.index().0 as u16,
             module_id: current_frame.function.module_id().to_string(),
             func_name: current_frame.function.name().to_string(),
-            inputs: args_1.into_iter().zip(&loaded_func.parameters).map(|(value, ty)| {
-                let (ty, value) = match ty {
-                    Type::TyParam(idx) => {
-                        let ty = &ty_args[*idx as usize];
-                        (ty, value)
-                    },
-                    Type::Reference(inner) | Type::MutableReference(inner) => {
-                        let ref_value: Reference = value.cast().map_err(|_err| {
-                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                "non reference value given for a reference typed return value".to_string(),
-                            )
-                        })?;
-                        let inner_value = ref_value.read_ref()?;
-
-                        (&**inner, inner_value)
-                    },
-                    _ => (ty, value),
-                };
-                let layout = loader.type_to_type_layout_type_args(ty, &ty_args).map_err(|_err| {
-                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                        "entry point functions cannot have non-serializable return types".to_string(),
-                    )
-                })?;
-                let annotated_layout = current_frame.resolver(link_context, loader).type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
-                Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-            }).map(|v: Result<InputValue, PartialVMError>| v.unwrap_or(InputValue::MoveValue(A::MoveValue::U8(0)))).collect(),
+            inputs: Self::decode_move_values(
+                loader,
+                args_1,
+                &entry_func.parameters,
+                Some(&*ty_args)).iter().map(|v| v.clone().map(|v| InputValue::MoveValue(v))).collect(),
             outputs: vec![],
             // TODO(pcxu): add type args
             type_args: current_frame.ty_args().into_iter().map(|ty| {
                 loader.type_to_type_tag(ty).unwrap().to_string()
             }).collect(),
             sub_traces: CallTraces::new(),
+            gas_info: GasInfo::make_frame(u64::from(gas_meter.remaining_gas())),
             error: None,
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
@@ -521,16 +591,6 @@ impl Interpreter {
                         None
                     );
 
-                    // set outputs in call trace
-                    let mut outputs = vec![];
-                    for val in self
-                        .operand_stack
-                        .last_n(current_frame.function.return_type_count())
-                        .unwrap()
-                    {
-                        outputs.push((*val).copy_value().unwrap());
-                    }
-
                     let (_, _, _, loaded_func) = loader.load_function(
                         current_frame.function.module_id(),
                         &IdentStr::new(current_frame.function.name()).unwrap(),
@@ -538,32 +598,8 @@ impl Interpreter {
                         data_store,
                     )?;
 
-                    call_traces.set_outputs(
-                        outputs.into_iter().zip(&loaded_func.return_).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::TyParam(idx) => {
-                                    let ty = &current_frame.ty_args()[*idx as usize];
-                                    (ty, value)
-                                },
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = loader.type_to_type_layout_type_args(ty, &current_frame.ty_args()).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = resolver.type_to_fully_annotated_layout_type_args(ty, &current_frame.ty_args())?;
-                            Ok(value.as_move_value(&layout).decorate(&annotated_layout))
-                        }).map(|v: Result<A::MoveValue, PartialVMError>| v.unwrap_or(A::MoveValue::U8(0))).collect());
+                    set_call_trace_outputs!(self, call_traces, loader, loaded_func, Some(current_frame.ty_args()));
+                    call_traces.set_gas_end(u64::from(gas_meter.remaining_gas()));
 
                     if let Some(frame) = self.call_stack.pop() {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
@@ -608,30 +644,15 @@ impl Interpreter {
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
-                        inputs: inputs.into_iter().zip(&loaded_func.parameters).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = resolver.type_to_fully_annotated_layout(ty)?;
-                            Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-                        }).map(|v: Result<InputValue, PartialVMError>| v.unwrap_or(InputValue::MoveValue(A::MoveValue::U8(0)))).collect(),
+                        inputs: Self::decode_move_values(
+                            loader,
+                            inputs,
+                            &loaded_func.parameters,
+                            None).iter().map(|v| v.clone().map(|v| InputValue::MoveValue(v))).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
+                        gas_info: GasInfo::make_frame(u64::from(gas_meter.remaining_gas())),
                         error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -656,10 +677,6 @@ impl Interpreter {
                         // Defer the error handling until we can trace the closure of the frame.
                         let deferred_err =
                             self.call_native(&resolver, gas_meter, extensions, func, vec![]);
-                                // .map_err(|e| {
-                                //     call_traces.set_error(Self::transform_error(loader, data_store, e.clone()));
-                                //     e
-                                // });
 
                         close_frame!(
                             tracer,
@@ -674,13 +691,12 @@ impl Interpreter {
 
                         // Now raise the error from the `call_native` if there was one.
                         if let Err(err) = deferred_err {
-                            call_traces.set_error(Self::transform_error(loader, data_store, err));
-                            while let Some(_) = self.call_stack.pop() {
-                                let top_call = call_traces.pop().unwrap();
-                                call_traces.push_call_trace(top_call);
-                            }
-                            return Ok((self.operand_stack.value, call_traces));
+                            halt_call_trace!(self, call_traces, loader, data_store, gas_meter, err);
                         }
+                        set_call_trace_outputs!(self, call_traces, loader, loaded_func, None);
+                        call_traces.set_gas_end(u64::from(gas_meter.remaining_gas()));
+                        let top_call = call_traces.pop().unwrap();
+                        call_traces.push_call_trace(top_call);
 
                         current_frame.pc += 1; // advance past the Call instruction in the caller
 
@@ -734,42 +750,17 @@ impl Interpreter {
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
-                        inputs: inputs.into_iter().zip(&loaded_func.parameters).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::TyParam(idx) => {
-                                    let ty = &ty_args[*idx as usize];
-                                    (ty, value)
-                                },
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = loader.type_to_type_layout_type_args(ty, &ty_args).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = resolver.type_to_fully_annotated_layout_type_args(ty, &ty_args)?;
-                            Ok(InputValue::MoveValue(value.as_move_value(&layout).decorate(&annotated_layout)))
-                        }).map(|v: Result<InputValue, PartialVMError>|
-                            match v {
-                                Ok(val) => val,
-                                Err(_) => {
-                                    InputValue::MoveValue(A::MoveValue::U8(0))
-                                }
-                            }).collect(),
+                        inputs: Self::decode_move_values(
+                            loader,
+                            inputs,
+                            &loaded_func.parameters,
+                            Some(&*ty_args)).iter().map(|v| v.clone().map(|v| InputValue::MoveValue(v))).collect(),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
+                        gas_info: GasInfo::make_frame(u64::from(gas_meter.remaining_gas())),
                         error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -808,13 +799,12 @@ impl Interpreter {
 
                         // Now raise the error from the `call_native` if there was one.
                         if let Err(err) = deferred_err {
-                            call_traces.set_error(Self::transform_error(loader, data_store, err));
-                            while let Some(_) = self.call_stack.pop() {
-                                let top_call = call_traces.pop().unwrap();
-                                call_traces.push_call_trace(top_call);
-                            }
-                            return Ok((self.operand_stack.value, call_traces));
+                            halt_call_trace!(self, call_traces, loader, data_store, gas_meter, err);
                         }
+                        set_call_trace_outputs!(self, call_traces, loader, loaded_func, None);
+                        call_traces.set_gas_end(u64::from(gas_meter.remaining_gas()));
+                        let top_call = call_traces.pop().unwrap();
+                        call_traces.push_call_trace(top_call);
 
                         current_frame.pc += 1; // advance past the Call instruction in the caller
                         continue;
@@ -832,12 +822,7 @@ impl Interpreter {
                     current_frame = frame;
                 }
                 Err(err) => {
-                    call_traces.set_error(Self::transform_error(loader, data_store, err));
-                    while let Some(_) = self.call_stack.pop() {
-                        let top_call = call_traces.pop().unwrap();
-                        call_traces.push_call_trace(top_call);
-                    }
-                    return Ok((self.operand_stack.value, call_traces));
+                    halt_call_trace!(self, call_traces, loader, data_store, gas_meter, err);
                 }
             }
         }

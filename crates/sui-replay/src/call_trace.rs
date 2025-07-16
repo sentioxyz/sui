@@ -1,4 +1,4 @@
-use move_binary_format::call_trace::{InternalCallTrace, InternalCallTraceError};
+use move_binary_format::call_trace::{GasInfo, InternalCallTrace, InternalCallTraceError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
@@ -25,6 +25,7 @@ pub struct CallTraceWithSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     pub pc: u16,
+    pub gas_used: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<CallTraceError>,
 }
@@ -60,13 +61,13 @@ impl CallTraceWithSource {
                 .inputs
                 .clone()
                 .into_iter()
-                .map(|i| input_value_to_json(i, trace_v2))
+                .map(|i| i.map_or(serde_json::to_value("?").unwrap(), |i| input_value_to_json(i, trace_v2)))
                 .collect::<Vec<Value>>(),
             return_value: call_trace
                 .outputs
                 .clone()
                 .into_iter()
-                .map(|i| move_value_to_json(i, trace_v2))
+                .map(|i| i.map_or(serde_json::to_value("?").unwrap(), |i| move_value_to_json(i, trace_v2)))
                 .collect::<Vec<Value>>(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace
@@ -78,6 +79,7 @@ impl CallTraceWithSource {
                 .collect(),
             location: None,
             pc: call_trace.pc,
+            gas_used: call_trace.gas_info.gas_used(),
             error: {
                 if let Some(InternalCallTraceError{vm_error, function_name, code_offset}) = call_trace.error {
                     Some(CallTraceError {

@@ -50,6 +50,7 @@ mod checked {
         sync::Arc,
         time::Instant,
     };
+    use move_binary_format::call_trace::GasInfo;
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::{
@@ -353,9 +354,9 @@ mod checked {
                             }
                         };
 
-                        inputs.push(input);
+                        inputs.push(Some(input));
                     }
-                    inputs.push(InputValue::MoveValue(A::MoveValue::Address(AccountAddress::from(addr))));
+                    inputs.push(Some(InputValue::MoveValue(A::MoveValue::Address(AccountAddress::from(addr)))));
                     let call_trace = InternalCallTrace {
                         pc: 0,
                         from_module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
@@ -366,6 +367,7 @@ mod checked {
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
                         fdef_idx: 0,
+                        gas_info: GasInfo::make_frame(0),
                         error: None,
                     };
                     call_traces.push(call_trace).expect("Failed to push call trace");
