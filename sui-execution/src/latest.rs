@@ -239,7 +239,7 @@ impl executor::Executor for Executor {
         Result<TraceResult, ExecutionError>,
     ) {
         let (inner_temp_store, gas_status, effects, _timings, result) = if skip_all_checks {
-            execute_transaction_to_effects::<DevCallTrace>(
+            execute_transaction_to_effects::<DevCallTrace<true>>(
                 store,
                 input_objects,
                 gas,
@@ -257,7 +257,7 @@ impl executor::Executor for Executor {
                 &mut None,
             )
         } else {
-            execute_transaction_to_effects::<DevCallTrace>(
+            execute_transaction_to_effects::<DevCallTrace<false>>(
                 store,
                 input_objects,
                 gas,

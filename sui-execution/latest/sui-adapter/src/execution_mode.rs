@@ -400,7 +400,7 @@ fn value_to_bytes_and_tag(
     Ok((bytes, type_tag))
 }
 
-impl ExecutionMode for DevCallTrace {
+impl<const SKIP_ALL_CHECKS: bool> ExecutionMode for DevCallTrace<SKIP_ALL_CHECKS> {
     type ArgumentUpdates = Vec<(Argument, Vec<u8>, TypeTag)>;
     type ExecutionResults = TraceResult;
 

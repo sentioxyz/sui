@@ -92,7 +92,7 @@ pub type ExecutionResult = (
 
 pub type TraceResult = CallTraces;
 
-pub struct DevCallTrace;
+pub struct DevCallTrace<const SKIP_ALL_CHECKS: bool>;
 
 impl ExecutionResultsV2 {
     pub fn drop_writes(&mut self) {
