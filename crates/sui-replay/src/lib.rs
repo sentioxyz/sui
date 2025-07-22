@@ -29,6 +29,8 @@ use sui_config::node::ExpensiveSafetyCheckConfig;
 use sui_protocol_config::Chain;
 use sui_types::digests::TransactionDigest;
 use tracing::{error, info};
+use crate::call_trace::CallTraceWithSource;
+use crate::types::ReplayEngineError;
 
 pub mod batch_replay;
 pub mod config;
@@ -36,11 +38,13 @@ mod data_fetcher;
 mod displays;
 pub mod fuzz;
 pub mod fuzz_mutations;
-mod replay;
+pub mod replay;
 #[cfg(test)]
 mod tests;
 pub mod transaction_provider;
 pub mod types;
+pub mod call_trace;
+mod converter;
 
 static DEFAULT_SANDBOX_BASE_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sandbox_snapshots");
@@ -195,6 +199,12 @@ pub enum ReplayToolCommand {
 
     #[command(name = "report")]
     Report,
+
+    #[command(name = "tt")]
+    TraceTransaction {
+        #[arg(long, short)]
+        tx_digest: String,
+    },
 }
 
 #[async_recursion]
@@ -237,6 +247,8 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 None,
+                false,
+                false,
             )
             .await?;
 
@@ -370,6 +382,8 @@ pub async fn execute_replay_command(
                 protocol_version,
                 output_path,
                 parse_configs_versions(config_objects),
+                false,
+                false,
             )
             .await?;
 
@@ -395,6 +409,8 @@ pub async fn execute_replay_command(
                 protocol_version,
                 None,
                 parse_configs_versions(config_objects),
+                false,
+                false,
             )
             .await?;
 
@@ -565,6 +581,30 @@ pub async fn execute_replay_command(
                 }
             }
         }
+        ReplayToolCommand::TraceTransaction { tx_digest } => {
+            let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+            info!("Tracing tx: {}", tx_digest);
+            let sandbox_state = LocalExec::replay_with_network_config(
+                get_rpc_url(rpc_url, cfg_path, chain)?,
+                tx_digest,
+                safety,
+                use_authority,
+                None,
+                None,
+                None,
+                None,
+                true,
+                true,
+            )
+                .await?;
+            match sandbox_state.trace_results {
+                Some(results) => println!("{}", serde_json::to_string_pretty(&results)?),
+                None => {
+                    println!("No trace results");
+                }
+            };
+            None
+        }
     })
 }
 
@@ -604,4 +644,38 @@ fn parse_configs_versions(
             })
             .collect(),
     )
+}
+
+pub async fn init_for_tracer(
+    rpc_url: String,
+) -> Result<LocalExec, ReplayEngineError> {
+    LocalExec::init_for_tracer(rpc_url).await
+}
+
+pub async fn execute_call_trace(
+    local_exec: LocalExec,
+    tx_digest: String,
+    safety_checks: bool,
+    use_authority: bool,
+) -> Result<Option<Vec<CallTraceWithSource>>, ReplayEngineError> {
+    let safety = if safety_checks {
+        ExpensiveSafetyCheckConfig::new_enable_all()
+    } else {
+        ExpensiveSafetyCheckConfig::default()
+    };
+    let tx_digest = TransactionDigest::from_str(&tx_digest)?;
+    info!("Tracing tx: {}", tx_digest);
+    let sandbox_state = LocalExec::replay_with_network_config_for_trace(
+        local_exec,
+        tx_digest,
+        safety,
+        use_authority,
+        Some(-1),
+        None,
+        None,
+        None,
+        true,
+        true,
+    ).await?;
+    Ok(sandbox_state.trace_results)
 }
