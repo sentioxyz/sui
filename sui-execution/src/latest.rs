@@ -6,7 +6,7 @@ use move_trace_format::format::MoveTraceBuilder;
 use move_vm_config::verifier::{MeterConfig, VerifierConfig};
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use sui_protocol_config::ProtocolConfig;
-use sui_types::execution::ExecutionTiming;
+use sui_types::execution::{DevCallTrace, ExecutionTiming, TraceResult};
 use sui_types::execution_params::ExecutionOrEarlyError;
 use sui_types::transaction::GasData;
 use sui_types::{
@@ -210,6 +210,73 @@ impl executor::Executor for Executor {
         store: Box<dyn TypeLayoutStore + 'store>,
     ) -> Box<dyn LayoutResolver + 'r> {
         Box::new(TypeLayoutResolver::new(&self.0, store))
+    }
+
+    fn dev_transaction_call_trace(
+        &self,
+        store: &dyn BackingStore,
+        // Configuration
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        execution_params: ExecutionOrEarlyError,
+        // Epoch
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        // Transaction Inputs
+        input_objects: CheckedInputObjects,
+        // Gas related
+        gas: GasData,
+        gas_status: SuiGasStatus,
+        // Transaction
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        skip_all_checks: bool,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Result<TraceResult, ExecutionError>,
+    ) {
+        let (inner_temp_store, gas_status, effects, _timings, result) = if skip_all_checks {
+            execute_transaction_to_effects::<DevCallTrace<true>>(
+                store,
+                input_objects,
+                gas,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                execution_params,
+                &mut None,
+            )
+        } else {
+            execute_transaction_to_effects::<DevCallTrace<false>>(
+                store,
+                input_objects,
+                gas,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                execution_params,
+                &mut None,
+            )
+        };
+        (inner_temp_store, gas_status, effects, result)
     }
 }
 

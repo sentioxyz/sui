@@ -16,6 +16,7 @@ use move_core_types::language_storage::TypeTag;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
+use move_binary_format::call_trace::CallTraces;
 
 /// A type containing all of the information needed to work in execution with an object whose
 /// consensus stream is ended, and when committing the execution effects of the transaction.
@@ -87,6 +88,10 @@ pub type ExecutionResult = (
     /*  mutable_reference_outputs */ Vec<(Argument, Vec<u8>, TypeTag)>,
     /*  return_values */ Vec<(Vec<u8>, TypeTag)>,
 );
+
+pub type TraceResult = CallTraces;
+
+pub struct DevCallTrace<const SKIP_ALL_CHECKS: bool>;
 
 impl ExecutionResultsV2 {
     pub fn drop_writes(&mut self) {

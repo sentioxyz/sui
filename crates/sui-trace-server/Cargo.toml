@@ -1,0 +1,14 @@
+[package]
+name = "sui-trace-server"
+edition = "2021"
+version.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum.workspace = true
+axum-server.workspace = true
+tokio.workspace = true
+serde.workspace = true
+sui-replay.workspace = true
+tracing-subscriber.workspace = true

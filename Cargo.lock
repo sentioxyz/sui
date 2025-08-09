@@ -15732,6 +15732,7 @@ dependencies = [
  "bcs",
  "clap",
  "futures",
+ "hex",
  "http 1.3.1",
  "jsonrpsee",
  "lru 0.10.0",
@@ -16471,6 +16472,18 @@ dependencies = [
  "tokio",
  "tracing",
  "typed-store",
+]
+
+[[package]]
+name = "sui-trace-server"
+version = "1.55.0"
+dependencies = [
+ "axum 0.8.3",
+ "axum-server",
+ "serde",
+ "sui-replay",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
