@@ -502,6 +502,12 @@ impl Arbitrary for StatusCode {
     }
 }
 
+impl fmt::Display for StatusCode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[test]
 fn test_status_codes() {
     use std::collections::HashSet;
