@@ -23,6 +23,7 @@ use move_core_types::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
+use move_binary_format::call_trace::CallTraces;
 
 const EXECUTION_TIME_OBSERVATION_CHUNK_KEY_STRUCT: &IdentStr =
     ident_str!("ExecutionTimeObservationChunkKey");
@@ -110,6 +111,10 @@ pub type ExecutionResult = (
     /*  mutable_reference_outputs */ Vec<(Argument, Vec<u8>, TypeTag)>,
     /*  return_values */ Vec<(Vec<u8>, TypeTag)>,
 );
+
+pub type TraceResult = CallTraces;
+
+pub struct DevCallTrace<const SKIP_ALL_CHECKS: bool>;
 
 impl ExecutionResultsV2 {
     pub fn drop_writes(&mut self) {
