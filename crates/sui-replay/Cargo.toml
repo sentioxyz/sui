@@ -50,3 +50,4 @@ sui-sdk.workspace = true
 sui-storage.workspace = true
 sui-transaction-checks.workspace = true
 sui-types.workspace = true
+hex.workspace = true
