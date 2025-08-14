@@ -70,12 +70,14 @@ macro_rules! set_err_info {
 
 macro_rules! halt_call_trace {
     ($self:expr, $call_traces:expr, $loader:expr, $data_store:expr, $gas_meter:expr, $err:expr) => {
-        $call_traces.set_error(Interpreter::transform_error($loader, $data_store, $err));
-        while let Some(_) = $self.call_stack.pop() {
+        let e = Interpreter::transform_error($loader, $data_store, $err);
+        while $call_traces.len() > 1 {
+            $call_traces.set_error(e.clone());
             $call_traces.set_gas_end(u64::from($gas_meter.remaining_gas()));
             let top_call = $call_traces.pop().unwrap();
             $call_traces.push_call_trace(top_call);
         }
+        $call_traces.set_error(e.clone());
         return Ok(($self.operand_stack.value, $call_traces));
     };
 }
