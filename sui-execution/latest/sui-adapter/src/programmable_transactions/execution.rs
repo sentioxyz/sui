@@ -557,7 +557,7 @@ mod checked {
                         call_traces.0.len() == 1,
                         "Call traces length for move call should be 1",
                     );
-                    (return_values?, Some(call_traces))
+                    (return_values.unwrap_or_default(), Some(call_traces))
                 } else {
                     let return_values = execute_move_call::<Mode>(
                         context,
