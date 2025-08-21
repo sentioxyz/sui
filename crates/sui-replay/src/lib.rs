@@ -677,5 +677,6 @@ pub async fn execute_call_trace(
         true,
         true,
     ).await?;
+    info!("Tracing tx done: {}", tx_digest);
     Ok(sandbox_state.trace_results)
 }

@@ -12,3 +12,4 @@ tokio.workspace = true
 serde.workspace = true
 sui-replay.workspace = true
 tracing-subscriber.workspace = true
+tower-http.workspace = true

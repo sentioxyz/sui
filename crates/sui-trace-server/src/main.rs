@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use tower_http::compression::CompressionLayer;
 use sui_replay::call_trace::CallTraceWithSource;
 
 pub const DEFAULT_PORT: u16 = 9301;
@@ -65,7 +66,8 @@ async fn main() {
     println!("listening on http://localhost:{}", DEFAULT_PORT);
 
     let app = Router::new()
-        .route("/{chain_id}/call_trace/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()));
+        .route("/{chain_id}/call_trace/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()))
+        .layer(CompressionLayer::new().gzip(true));
 
     axum_server::Server::bind(format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
         .serve(app.into_make_service())
