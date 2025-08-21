@@ -17021,6 +17021,7 @@ dependencies = [
  "serde",
  "sui-replay",
  "tokio",
+ "tower-http",
  "tracing-subscriber",
 ]
 
