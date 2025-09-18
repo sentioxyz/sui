@@ -40,7 +40,6 @@ use crate::native_extensions::NativeContextExtensions;
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
 use move_binary_format::call_trace::GasInfo;
 use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex};
-use move_vm_profiler::{profile_close_frame, profile_open_frame};
 use tracing::error;
 
 macro_rules! debug_write {

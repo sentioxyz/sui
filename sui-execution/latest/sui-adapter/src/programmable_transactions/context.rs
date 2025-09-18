@@ -805,14 +805,7 @@ mod checked {
         pub fn finish<Mode: ExecutionMode>(self) -> Result<ExecutionResults, ExecutionError> {
             if Mode::get_call_trace() {
                 // return finished results
-                return Ok(ExecutionResults::V2(ExecutionResultsV2 {
-                    written_objects: BTreeMap::new(),
-                    modified_objects: BTreeSet::new(),
-                    created_object_ids: BTreeSet::new(),
-                    deleted_object_ids: BTreeSet::new(),
-                    user_events: Vec::new(),
-                    accumulator_events: Vec::new(),
-                }));
+                return Ok(ExecutionResults::V2(ExecutionResultsV2::default()));
             }
             let Self {
                 protocol_config,

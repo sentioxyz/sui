@@ -590,7 +590,6 @@ pub async fn execute_replay_command(
                 None,
                 None,
                 None,
-                None,
                 true,
                 true,
             )
@@ -672,7 +671,6 @@ pub async fn execute_call_trace(
         safety,
         use_authority,
         Some(-1),
-        None,
         None,
         None,
         true,
