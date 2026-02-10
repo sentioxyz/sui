@@ -85,7 +85,7 @@ impl CallTraceWithSource {
                     Some(CallTraceError {
                         major_status: vm_error.major_status().to_string(),
                         sub_status: vm_error.sub_status(),
-                        message: vm_error.message().cloned(),
+                        message: vm_error.message().map(ToString::to_string),
                         location: if let MoveLoc::Module(module_id) = vm_error.location() {
                             Some(module_id.clone())
                         } else {

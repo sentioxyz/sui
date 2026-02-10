@@ -17014,14 +17014,14 @@ dependencies = [
 
 [[package]]
 name = "sui-trace-server"
-version = "1.57.0"
+version = "1.66.0"
 dependencies = [
  "axum 0.8.3",
  "axum-server",
  "serde",
  "sui-replay",
  "tokio",
- "tower-http",
+ "tower-http 0.5.2",
  "tracing-subscriber",
 ]
 

@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tower_http::compression::CompressionLayer;
 use sui_replay::call_trace::CallTraceWithSource;
+use std::net::SocketAddr;
 
 pub const DEFAULT_PORT: u16 = 9301;
 
@@ -69,7 +70,8 @@ async fn main() {
         .route("/{chain_id}/call_trace/by_tx_digest/{hash}", get(call_trace).with_state(config.clone()))
         .layer(CompressionLayer::new().gzip(true));
 
-    axum_server::Server::bind(format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap())
+    let addr: SocketAddr = format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap();
+    axum_server::Server::bind(addr)
         .serve(app.into_make_service())
         .await.unwrap();
 }
