@@ -52,7 +52,7 @@ use sui_types::{
     TypeTag,
     base_types::{MoveObjectType, ObjectID, SequenceNumber, TxContext},
     error::{ExecutionError, ExecutionErrorKind, SafeIndex},
-    execution::ExecutionResults,
+    execution::{ExecutionResults, ExecutionResultsV2},
     metrics::LimitsMetrics,
     move_package::{MovePackage, UpgradeCap, UpgradeReceipt, UpgradeTicket},
     object::{MoveObject, Object, Owner},
@@ -305,6 +305,10 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
     }
 
     pub fn finish<Mode: ExecutionMode>(mut self) -> Result<ExecutionResults, ExecutionError> {
+        if Mode::get_call_trace() {
+            // Keep legacy behavior: call-trace mode should not run post-exec writes/conservation checks.
+            return Ok(ExecutionResults::V2(ExecutionResultsV2::default()));
+        }
         assert_invariant!(
             !self.locations.tx_context_value.local(0)?.is_invalid()?,
             "tx context value should be present"
