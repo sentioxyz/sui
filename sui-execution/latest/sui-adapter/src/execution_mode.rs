@@ -70,6 +70,13 @@ pub trait ExecutionMode {
         argument_updates: Vec<(Argument, Vec<u8>, TypeTag)>,
         command_result: Vec<(Vec<u8>, TypeTag)>,
     ) -> Result<(), ExecutionError>;
+
+    fn finish_command_trace_v2(
+        _acc: &mut Self::ExecutionResults,
+        _trace_results: &Option<CallTraces>,
+    ) -> Result<(), ExecutionError> {
+        Ok(())
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -434,12 +441,31 @@ impl<const SKIP_ALL_CHECKS: bool> ExecutionMode for DevCallTrace<SKIP_ALL_CHECKS
 
     const TRACK_EXECUTION: bool = false;
 
-    fn add_argument_update_v2(acc: &mut Self::ArgumentUpdates, arg: Argument, bytes: Vec<u8>, type_: TypeTag) -> Result<(), ExecutionError> {
+    fn add_argument_update_v2(
+        _acc: &mut Self::ArgumentUpdates,
+        _arg: Argument,
+        _bytes: Vec<u8>,
+        _type_: TypeTag,
+    ) -> Result<(), ExecutionError> {
         todo!()
     }
 
-    fn finish_command_v2(acc: &mut Self::ExecutionResults, argument_updates: Vec<(Argument, Vec<u8>, TypeTag)>, command_result: Vec<(Vec<u8>, TypeTag)>) -> Result<(), ExecutionError> {
+    fn finish_command_v2(
+        _acc: &mut Self::ExecutionResults,
+        _argument_updates: Vec<(Argument, Vec<u8>, TypeTag)>,
+        _command_result: Vec<(Vec<u8>, TypeTag)>,
+    ) -> Result<(), ExecutionError> {
         todo!()
+    }
+
+    fn finish_command_trace_v2(
+        acc: &mut Self::ExecutionResults,
+        trace_results: &Option<CallTraces>,
+    ) -> Result<(), ExecutionError> {
+        if let Some(trace_result) = trace_results {
+            acc.override_call_trace(trace_result);
+        }
+        Ok(())
     }
 }
 

@@ -12,11 +12,15 @@ use crate::{
         typing::ast as T,
     },
 };
-use move_core_types::account_address::AccountAddress;
+use move_binary_format::call_trace::{CallTraces, GasInfo, InputValue, InternalCallTrace};
+use move_core_types::{account_address::AccountAddress, annotated_value as A, ident_str};
 use move_trace_format::format::MoveTraceBuilder;
+use move_vm_types::values::Value as VMValue;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use sui_types::{
+    SUI_FRAMEWORK_ADDRESS,
     base_types::TxContext,
+    coin::Coin,
     error::{ExecutionError, ExecutionErrorKind},
     execution::{ExecutionTiming, ResultWithTimings},
     execution_status::PackageUpgradeError,
@@ -100,6 +104,10 @@ where
         if let Err(err) =
             execute_command::<Mode>(&mut context, &mut mode_results, c, trace_builder_opt)
         {
+            if Mode::get_call_trace() {
+                // In call-trace mode, keep collected trace results and stop executing more commands.
+                break;
+            }
             let object_runtime = context.object_runtime()?;
             // We still need to record the loaded child objects for replay
             let loaded_runtime_objects = object_runtime.loaded_runtime_objects();
@@ -160,6 +168,7 @@ fn execute_command<Mode: ExecutionMode>(
     let is_move_call = matches!(command, T::Command__::MoveCall(_));
     let num_args = command.arguments_len();
     let mut args_to_update = vec![];
+    let mut trace_results = None;
     let result = match command {
         T::Command__::MoveCall(move_call) => {
             trace_utils::trace_move_call_start(trace_builder_opt);
@@ -175,8 +184,19 @@ fn execute_command<Mode: ExecutionMode>(
                         .cloned(),
                 )
             }
-            let arguments = context.arguments(arguments)?;
-            let res = context.vm_move_call(function, arguments, trace_builder_opt);
+            let call_arguments = context.arguments(arguments.clone())?;
+            let res = if Mode::get_call_trace() {
+                let (return_values, call_traces) = context.vm_move_call_trace(
+                    function,
+                    call_arguments,
+                    &arguments,
+                    trace_builder_opt,
+                )?;
+                trace_results = Some(call_traces);
+                Ok(return_values.unwrap_or_default())
+            } else {
+                context.vm_move_call(function, call_arguments, trace_builder_opt)
+            };
             trace_utils::trace_move_call_end(trace_builder_opt);
             res?
         }
@@ -192,6 +212,14 @@ fn execute_command<Mode: ExecutionMode>(
                 "object values and types mismatch"
             );
             trace_utils::trace_transfer(context, trace_builder_opt, &object_values, &object_tys)?;
+            if Mode::get_call_trace() {
+                trace_results = Some(transfer_objects_call_trace(
+                    context,
+                    &object_values,
+                    &object_tys,
+                    recipient,
+                )?);
+            }
             for (object_value, ty) in object_values.into_iter().zip(object_tys) {
                 // TODO should we just call a Move function?
                 let recipient = Owner::AddressOwner(recipient.into());
@@ -380,6 +408,21 @@ fn execute_command<Mode: ExecutionMode>(
         let command_result = context.tracked_results(&result, &result_type)?;
         Mode::finish_command_v2(mode_results, argument_updates, command_result)?;
     }
+    if Mode::get_call_trace() {
+        Mode::finish_command_trace_v2(mode_results, &trace_results)?;
+        if let Some(trace_results) = &trace_results
+            && trace_results
+                .0
+                .first()
+                .and_then(|trace| trace.error.as_ref())
+                .is_some()
+        {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::VMInvariantViolation,
+                "call trace recorded execution error".to_string(),
+            ));
+        }
+    }
     assert_invariant!(
         result.len() == drop_values.len(),
         "result values and drop values mismatch"
@@ -396,4 +439,126 @@ fn execute_command<Mode: ExecutionMode>(
         "stack height did not end at 0"
     );
     Ok(())
+}
+
+fn transfer_objects_call_trace(
+    context: &mut Context,
+    object_values: &[CtxValue],
+    object_tys: &[T::Type],
+    recipient: AccountAddress,
+) -> Result<CallTraces, ExecutionError> {
+    assert_invariant!(
+        object_values.len() == object_tys.len(),
+        "object values and types mismatch for transfer call trace"
+    );
+    let mut call_traces = CallTraces::new();
+    let mut inputs = Vec::with_capacity(object_values.len() + 1);
+    for (value, ty) in object_values.iter().zip(object_tys) {
+        let layout = context.env.fully_annotated_layout(ty)?;
+        let move_value = VMValue::as_annotated_move_value_for_tracing_only(
+            value.inner_for_tracing().inner_for_tracing(),
+            &layout,
+        )
+        .ok_or_else(|| {
+            make_invariant_violation!(
+                "Failed to convert transfer object to MoveValue for call trace"
+            )
+        })?;
+        let type_tag: sui_types::TypeTag = ty
+            .clone()
+            .try_into()
+            .map_err(|e| make_invariant_violation!("Failed to convert type for call trace: {e}"))?;
+        let input = if let sui_types::TypeTag::Struct(struct_tag) = &type_tag {
+            if Coin::is_coin(struct_tag) {
+                let (coin_id, balance) = extract_coin_id_and_balance(&move_value)?;
+                InputValue::MoveValue(A::MoveValue::Struct(A::MoveStruct::new(
+                    *struct_tag.clone(),
+                    vec![
+                        (
+                            ident_str!("id").to_owned(),
+                            A::MoveValue::Address(coin_id),
+                        ),
+                        (
+                            ident_str!("balance").to_owned(),
+                            A::MoveValue::U64(balance),
+                        ),
+                    ],
+                )))
+            } else {
+                InputValue::String(serde_json::to_string(&move_value).map_err(|e| {
+                    make_invariant_violation!(
+                        "Failed to serialize transfer object for call trace: {e}"
+                    )
+                })?)
+            }
+        } else {
+            InputValue::String(serde_json::to_string(&move_value).map_err(|e| {
+                make_invariant_violation!("Failed to serialize transfer object for call trace: {e}")
+            })?)
+        };
+        inputs.push(Some(input));
+    }
+    inputs.push(Some(InputValue::MoveValue(A::MoveValue::Address(recipient))));
+    let call_trace = InternalCallTrace {
+        pc: 0,
+        from_module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+        module_id: SUI_FRAMEWORK_ADDRESS.to_string(),
+        func_name: "transfer_objects".to_string(),
+        inputs,
+        outputs: vec![],
+        type_args: vec![],
+        sub_traces: CallTraces::new(),
+        fdef_idx: 0,
+        gas_info: GasInfo::make_frame(0),
+        error: None,
+    };
+    call_traces
+        .push(call_trace)
+        .expect("Failed to push transfer call trace");
+    Ok(call_traces)
+}
+
+fn extract_coin_id_and_balance(move_value: &A::MoveValue) -> Result<(AccountAddress, u64), ExecutionError> {
+    let A::MoveValue::Struct(coin_struct) = move_value else {
+        invariant_violation!("Expected coin value to be a struct");
+    };
+    let [(_, id_value), (_, balance_value)] = coin_struct.fields.as_slice() else {
+        invariant_violation!("Expected coin struct to have two fields");
+    };
+
+    let coin_id = extract_coin_id_address(id_value)?;
+    let balance = extract_coin_balance(balance_value)?;
+    Ok((coin_id, balance))
+}
+
+fn extract_coin_id_address(id_value: &A::MoveValue) -> Result<AccountAddress, ExecutionError> {
+    let A::MoveValue::Struct(uid_struct) = id_value else {
+        invariant_violation!("Expected coin id field to be UID struct");
+    };
+    let [(_, id_inner)] = uid_struct.fields.as_slice() else {
+        invariant_violation!("Expected UID struct to have one field");
+    };
+    let A::MoveValue::Struct(id_struct) = id_inner else {
+        invariant_violation!("Expected UID inner value to be ID struct");
+    };
+    let [(_, bytes_value)] = id_struct.fields.as_slice() else {
+        invariant_violation!("Expected ID struct to have one field");
+    };
+    let A::MoveValue::Address(address) = bytes_value else {
+        invariant_violation!("Expected ID bytes field to be address");
+    };
+    Ok(*address)
+}
+
+fn extract_coin_balance(balance_value: &A::MoveValue) -> Result<u64, ExecutionError> {
+    let A::MoveValue::Struct(balance_struct) = balance_value else {
+        invariant_violation!("Expected coin balance field to be Balance struct");
+    };
+    let [(_, amount_value)] = balance_struct.fields.as_slice() else {
+        invariant_violation!("Expected Balance struct to have one field");
+    };
+    let A::MoveValue::U64(amount) = amount_value else {
+        invariant_violation!("Expected balance amount field to be u64");
+    };
+    Ok(*amount)
 }

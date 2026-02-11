@@ -22,6 +22,7 @@ use crate::{
 };
 use indexmap::{IndexMap, IndexSet};
 use move_binary_format::{
+    call_trace::CallTraces,
     CompiledModule,
     errors::{Location, PartialVMError, VMResult},
     file_format::FunctionDefinitionIndex,
@@ -685,6 +686,69 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         Ok(result)
     }
 
+    pub fn vm_move_call_trace(
+        &mut self,
+        function: T::LoadedFunction,
+        args: Vec<CtxValue>,
+        original_arguments: &[T::Argument],
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> Result<(Result<Vec<CtxValue>, ExecutionError>, CallTraces), ExecutionError> {
+        assert_invariant!(
+            args.len() == function.signature.parameters.len(),
+            "arg count and signature parameter count should match"
+        );
+        assert_invariant!(
+            original_arguments.len() == function.signature.parameters.len(),
+            "original arg count and signature parameter count should match"
+        );
+        let ty_args = function
+            .type_arguments
+            .iter()
+            .enumerate()
+            .map(|(idx, ty)| self.env.load_vm_type_argument_from_adapter_type(idx, ty))
+            .collect::<Result<_, _>>()?;
+        let serialized_args = args
+            .into_iter()
+            .zip(function.signature.parameters.iter())
+            .map(|(v, ty)| self.serialize_vm_call_trace_argument(v, ty))
+            .collect::<Result<Vec<_>, _>>()?;
+        let gas_status = self.gas_charger.move_gas_status_mut();
+        let mut data_store = LinkedDataStore::new(&function.linkage, self.env.linkable_store);
+        let (trace_result, call_traces) = self
+            .env
+            .vm
+            .get_runtime()
+            .call_trace(
+                &function.runtime_id,
+                function.name.as_ident_str(),
+                ty_args,
+                serialized_args,
+                &mut data_store,
+                &mut SuiGasMeter(gas_status),
+                &mut self.native_extensions,
+                trace_builder_opt.as_mut(),
+            )
+            .map_err(|e| self.env.convert_linked_vm_error(e, &function.linkage))?;
+        let result = match trace_result {
+            Ok(serialized_return_values) => {
+                let values = self.process_call_trace_outputs(
+                    &function,
+                    original_arguments,
+                    serialized_return_values,
+                )?;
+                self.take_user_events(
+                    function.storage_id,
+                    function.definition_index,
+                    function.instruction_length,
+                    &function.linkage,
+                )?;
+                Ok(values)
+            }
+            Err(e) => Err(self.env.convert_linked_vm_error(e, &function.linkage)),
+        };
+        Ok((result, call_traces))
+    }
+
     pub fn execute_function_bypass_visibility(
         &mut self,
         runtime_id: &ModuleId,
@@ -717,6 +781,72 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
             )
             .map_err(|e| self.env.convert_linked_vm_error(e, linkage))?;
         Ok(values.into_iter().map(|v| CtxValue(v.into())).collect())
+    }
+
+    fn process_call_trace_outputs(
+        &mut self,
+        function: &T::LoadedFunction,
+        original_arguments: &[T::Argument],
+        serialized_return_values: move_vm_runtime::session::SerializedReturnValues,
+    ) -> Result<Vec<CtxValue>, ExecutionError> {
+        let move_vm_runtime::session::SerializedReturnValues {
+            mutable_reference_outputs,
+            return_values,
+        } = serialized_return_values;
+        for (idx, bytes, _layout) in mutable_reference_outputs {
+            let Some(param_ty) = function.signature.parameters.get(idx as usize) else {
+                invariant_violation!("mutable reference output index out of bounds")
+            };
+            let T::Type::Reference(_, inner) = param_ty else {
+                invariant_violation!("mutable reference output must correspond to a ref parameter")
+            };
+            let value = CtxValue(Value::deserialize(self.env, &bytes, (**inner).clone())?);
+            let arg = original_arguments
+                .get(idx as usize)
+                .ok_or_else(|| make_invariant_violation!("argument index out of bounds"))?;
+            self.write_back_call_trace_ref(arg.value.0.location(), value)?;
+        }
+
+        assert_invariant!(
+            return_values.len() == function.signature.return_.len(),
+            "return values and return types should match"
+        );
+        return_values
+            .into_iter()
+            .zip(function.signature.return_.iter())
+            .map(|((bytes, _layout), ty)| Ok(CtxValue(Value::deserialize(self.env, &bytes, ty.clone())?)))
+            .collect()
+    }
+
+    fn write_back_call_trace_ref(
+        &mut self,
+        location: T::Location,
+        value: CtxValue,
+    ) -> Result<(), ExecutionError> {
+        let local = match self.locations.resolve(location)? {
+            ResolvedLocation::Local(local)
+            | ResolvedLocation::Pure { local, .. }
+            | ResolvedLocation::Receiving { local, .. } => local,
+        };
+        let mut local = local;
+        local.store(value.0)?;
+        Ok(())
+    }
+
+    fn serialize_vm_call_trace_argument(
+        &self,
+        value: CtxValue,
+        param_ty: &T::Type,
+    ) -> Result<Vec<u8>, ExecutionError> {
+        let (value, serialize_ty) = match param_ty {
+            T::Type::Reference(_, inner) => (value.0.read_ref()?, (**inner).clone()),
+            ty => (value.0, ty.clone()),
+        };
+        let layout = self.env.runtime_layout(&serialize_ty)?;
+        let Some(bytes) = value.typed_serialize(&layout) else {
+            invariant_violation!("Failed to serialize Move value for VM call trace");
+        };
+        Ok(bytes)
     }
 
     //
