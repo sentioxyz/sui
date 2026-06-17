@@ -490,7 +490,7 @@ pub async fn handle_replay_config(
     Ok(output_root_dir)
 }
 
-async fn run_replay<S>(
+pub async fn run_replay<S>(
     data_store: &S,
     output_root_dir: &Path,
     digests: &[String],

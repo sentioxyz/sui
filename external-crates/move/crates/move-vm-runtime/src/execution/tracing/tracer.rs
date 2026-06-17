@@ -202,6 +202,155 @@ impl StackType {
     }
 }
 
+fn set_trace_value_snapshot(trace_value: &mut TraceValue, snapshot: SerializableMoveValue) {
+    match trace_value {
+        TraceValue::RuntimeValue { value } => *value = snapshot,
+        TraceValue::ImmRef {
+            snapshot: value, ..
+        }
+        | TraceValue::MutRef {
+            snapshot: value, ..
+        } => {
+            *value = Box::new(snapshot);
+        }
+    }
+}
+
+fn child_value_mut(
+    value: &mut SerializableMoveValue,
+    index: usize,
+) -> Option<&mut SerializableMoveValue> {
+    match value {
+        SerializableMoveValue::Struct(value) => value.fields.get_mut(index).map(|(_, value)| value),
+        SerializableMoveValue::Variant(value) => {
+            value.fields.get_mut(index).map(|(_, value)| value)
+        }
+        SerializableMoveValue::Vector(values) => values.get_mut(index),
+        _ => None,
+    }
+}
+
+fn value_mut_at_trace_location<'a>(
+    root: &'a mut SerializableMoveValue,
+    location: &Location,
+) -> Option<&'a mut SerializableMoveValue> {
+    match location {
+        Location::Local(_, _) | Location::Global(_) => Some(root),
+        Location::Indexed(parent, index) => {
+            let parent = value_mut_at_trace_location(root, parent)?;
+            child_value_mut(parent, *index)
+        }
+    }
+}
+
+fn value_at_trace_location<'a>(
+    root: &'a SerializableMoveValue,
+    location: &Location,
+) -> Option<&'a SerializableMoveValue> {
+    match location {
+        Location::Local(_, _) | Location::Global(_) => Some(root),
+        Location::Indexed(parent, index) => {
+            let parent = value_at_trace_location(root, parent)?;
+            match parent {
+                SerializableMoveValue::Struct(value) => value.fields.get(*index).map(|(_, v)| v),
+                SerializableMoveValue::Variant(value) => value.fields.get(*index).map(|(_, v)| v),
+                SerializableMoveValue::Vector(values) => values.get(*index),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn trace_value_location_snapshot(value: &TraceValue) -> Option<SerializableMoveValue> {
+    match value {
+        TraceValue::RuntimeValue { value } => Some(value.clone()),
+        TraceValue::ImmRef { location, snapshot } | TraceValue::MutRef { location, snapshot } => {
+            value_at_trace_location(snapshot, location).cloned()
+        }
+    }
+}
+
+fn trace_value_after_exact_write(
+    mut root_value: TraceValue,
+    location: &Location,
+    written_value: SerializableMoveValue,
+) -> Option<TraceValue> {
+    let mut snapshot = root_value.snapshot().clone();
+    *value_mut_at_trace_location(&mut snapshot, location)? = written_value;
+    set_trace_value_snapshot(&mut root_value, snapshot);
+    Some(root_value)
+}
+
+fn trace_value_after_vector_push(
+    mut root_value: TraceValue,
+    location: &Location,
+    pushed_value: SerializableMoveValue,
+) -> Option<TraceValue> {
+    let mut snapshot = root_value.snapshot().clone();
+    let SerializableMoveValue::Vector(values) =
+        value_mut_at_trace_location(&mut snapshot, location)?
+    else {
+        return None;
+    };
+    values.push(pushed_value);
+    set_trace_value_snapshot(&mut root_value, snapshot);
+    Some(root_value)
+}
+
+fn trace_value_after_vector_swap(
+    mut root_value: TraceValue,
+    location: &Location,
+    left: usize,
+    right: usize,
+) -> Option<TraceValue> {
+    let mut snapshot = root_value.snapshot().clone();
+    let SerializableMoveValue::Vector(values) =
+        value_mut_at_trace_location(&mut snapshot, location)?
+    else {
+        return None;
+    };
+    if left >= values.len() || right >= values.len() {
+        return None;
+    }
+    values.swap(left, right);
+    set_trace_value_snapshot(&mut root_value, snapshot);
+    Some(root_value)
+}
+
+fn trace_value_after_vector_pop_back(
+    mut root_value: TraceValue,
+    location: &Location,
+) -> Option<TraceValue> {
+    let mut snapshot = root_value.snapshot().clone();
+    let SerializableMoveValue::Vector(values) =
+        value_mut_at_trace_location(&mut snapshot, location)?
+    else {
+        return None;
+    };
+    values.pop()?;
+    set_trace_value_snapshot(&mut root_value, snapshot);
+    Some(root_value)
+}
+
+fn numeric_trace_value(value: &TraceValue) -> Option<u128> {
+    match trace_value_location_snapshot(value)? {
+        SerializableMoveValue::U8(value) => Some(value.into()),
+        SerializableMoveValue::U16(value) => Some(value.into()),
+        SerializableMoveValue::U32(value) => Some(value.into()),
+        SerializableMoveValue::U64(value) => Some(value.into()),
+        SerializableMoveValue::U128(value) => Some(value),
+        SerializableMoveValue::U256(value) => value.to_string().parse().ok(),
+        _ => None,
+    }
+}
+
+fn pop_effect_value(effects: &[EF], index: usize) -> Option<TraceValue> {
+    let EF::Pop(value) = effects.get(index)? else {
+        return None;
+    };
+    Some(value.clone())
+}
+
 impl VMTracer<'_> {
     /// Emit an error event to the trace if `true`
     fn emit_trace_error_if_err(&mut self, is_err: bool) {
@@ -338,6 +487,26 @@ impl VMTracer<'_> {
         };
 
         Some(())
+    }
+
+    fn record_written_global_snapshot(
+        &mut self,
+        location: &RuntimeLocation,
+        snapshot: SerializableMoveValue,
+    ) -> Option<()> {
+        match location {
+            RuntimeLocation::Global(id) => {
+                let Some(GlobalValue::Value(trace_value)) = self.loaded_data.get_mut(id) else {
+                    return Some(());
+                };
+                set_trace_value_snapshot(trace_value, snapshot);
+                Some(())
+            }
+            RuntimeLocation::Indexed(parent, _) => {
+                self.record_written_global_snapshot(parent, snapshot)
+            }
+            RuntimeLocation::Local(_, _) | RuntimeLocation::Stack(_) => Some(()),
+        }
     }
 
     /// Resolve a value on the stack to a TraceValue. References are fully rooted all the way back
@@ -1405,15 +1574,31 @@ impl VMTracer<'_> {
             B::WriteRef => {
                 let reference_ty = self.type_stack.pop()?;
                 let _value_ty = self.type_stack.pop()?;
+                let mut written_runtime_location = None;
+                let mut written_global_snapshot = None;
                 let effects = emit_effects! {
-                    let location = reference_ty.ref_type.as_ref()?.1.clone();
-                    let root_value_after_write =
-                        self.resolve_location(vtables, machine, &location)?;
+                    let runtime_location = reference_ty.ref_type.as_ref()?.1.clone();
+                    let reference = pop_effect_value(&self.effects, 0)?;
+                    let value = pop_effect_value(&self.effects, 1)?;
+                    let location = reference.location()?.clone();
+                    let root_value_after_write = trace_value_after_exact_write(
+                        reference,
+                        &location,
+                        trace_value_location_snapshot(&value)?,
+                    )
+                    .or_else(|| self.resolve_location(vtables, machine, &runtime_location))?;
+                    written_runtime_location = Some(runtime_location);
+                    written_global_snapshot = Some(root_value_after_write.snapshot().clone());
                     vec![EF::Write(Write {
-                        location: location.as_trace_location()?,
+                        location,
                         root_value_after_write,
                     })]
                 };
+                if let (Some(runtime_location), Some(snapshot)) =
+                    (written_runtime_location, written_global_snapshot)
+                {
+                    self.record_written_global_snapshot(&runtime_location, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1551,21 +1736,31 @@ impl VMTracer<'_> {
             B::VecPushBack(_) => {
                 self.type_stack.pop()?;
                 self.type_stack.pop()?;
+                let mut written_runtime_location = None;
+                let mut written_global_snapshot = None;
                 let effects = emit_effects! {
-                    let EF::Pop(reference_val) = &self.effects[1] else {
-                        self.report_error(
-                            "Expected a reference value for the vector in VecPushBack",
-                        );
-                        return None;
-                    };
-                    let location = reference_val.location()?.clone();
+                    let pushed = pop_effect_value(&self.effects, 0)?;
+                    let reference = pop_effect_value(&self.effects, 1)?;
+                    let location = reference.location()?.clone();
                     let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
-                    let snap = self.resolve_location(vtables, machine, &runtime_location)?;
+                    let snap = trace_value_after_vector_push(
+                        reference,
+                        &location,
+                        trace_value_location_snapshot(&pushed)?,
+                    )
+                    .or_else(|| self.resolve_location(vtables, machine, &runtime_location))?;
+                    written_runtime_location = Some(runtime_location);
+                    written_global_snapshot = Some(snap.snapshot().clone());
                     vec![EF::Write(Write {
                         location,
                         root_value_after_write: snap,
                     })]
                 };
+                if let (Some(runtime_location), Some(snapshot)) =
+                    (written_runtime_location, written_global_snapshot)
+                {
+                    self.record_written_global_snapshot(&runtime_location, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1579,9 +1774,33 @@ impl VMTracer<'_> {
                     layout: (*ty).clone(),
                     ref_type: None,
                 });
-                let effects = emit_effects!(vec![EF::Push(
-                    self.resolve_stack_value(vtables, machine, 0)?
-                )]);
+                let mut written_runtime_location = None;
+                let mut written_global_snapshot = None;
+                let effects = emit_effects! {
+                    let mut effects = vec![EF::Push(
+                        self.resolve_stack_value(vtables, machine, 0)?
+                    )];
+                    let reference = pop_effect_value(&self.effects, 0)?;
+                    let location = reference.location()?.clone();
+                    let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
+                    if let Some(root_value_after_write) =
+                        trace_value_after_vector_pop_back(reference, &location)
+                            .or_else(|| self.resolve_location(vtables, machine, &runtime_location))
+                    {
+                        written_runtime_location = Some(runtime_location);
+                        written_global_snapshot = Some(root_value_after_write.snapshot().clone());
+                        effects.push(EF::Write(Write {
+                            location,
+                            root_value_after_write,
+                        }));
+                    }
+                    effects
+                };
+                if let (Some(runtime_location), Some(snapshot)) =
+                    (written_runtime_location, written_global_snapshot)
+                {
+                    self.record_written_global_snapshot(&runtime_location, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1612,14 +1831,33 @@ impl VMTracer<'_> {
                 self.type_stack.pop()?;
                 self.type_stack.pop()?;
                 let v_ref = self.type_stack.pop()?;
+                let mut written_runtime_location = None;
+                let mut written_global_snapshot = None;
                 let effects = emit_effects! {
-                    let location = v_ref.ref_type.as_ref()?.1.clone();
-                    let snap = self.resolve_location(vtables, machine, &location)?;
+                    let right = pop_effect_value(&self.effects, 0)?;
+                    let left = pop_effect_value(&self.effects, 1)?;
+                    let reference = pop_effect_value(&self.effects, 2)?;
+                    let location = reference.location()?.clone();
+                    let runtime_location = v_ref.ref_type.as_ref()?.1.clone();
+                    let snap = trace_value_after_vector_swap(
+                        reference,
+                        &location,
+                        usize::try_from(numeric_trace_value(&left)?).ok()?,
+                        usize::try_from(numeric_trace_value(&right)?).ok()?,
+                    )
+                    .or_else(|| self.resolve_location(vtables, machine, &runtime_location))?;
+                    written_runtime_location = Some(runtime_location);
+                    written_global_snapshot = Some(snap.snapshot().clone());
                     vec![EF::Write(Write {
-                        location: location.as_trace_location()?,
+                        location,
                         root_value_after_write: snap,
                     })]
                 };
+                if let (Some(runtime_location), Some(snapshot)) =
+                    (written_runtime_location, written_global_snapshot)
+                {
+                    self.record_written_global_snapshot(&runtime_location, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
