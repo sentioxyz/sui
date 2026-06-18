@@ -14617,14 +14617,17 @@ dependencies = [
  "lru 0.10.1",
  "move-core-types",
  "mysten-common",
+ "prost-types 0.14.1",
  "reqwest",
  "serde",
  "serde_json",
  "sui-framework",
  "sui-json-rpc-types",
+ "sui-rpc",
  "sui-sdk",
  "sui-types",
  "tokio",
+ "tonic 0.14.5",
  "tracing",
 ]
 

@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use sui_data_store::{
     Node, ObjectKey, ObjectStore, VersionQuery,
     node::{MAINNET_GQL_URL, MAINNET_RPC_URL, TESTNET_GQL_URL, TESTNET_RPC_URL},
-    stores::{ArchiveRpcDataStore, DataStore},
+    stores::{ArchiveRpcDataStore, DataStore, GrpcDataStore},
 };
 use sui_replay_2::{
     ReplayConfigExperimental, ReplayConfigStableInternal, StoreMode, handle_replay_config,
@@ -77,6 +77,7 @@ impl AppConfig {
 struct NetworkConfig {
     node: Node,
     archive_rpc_url: Option<String>,
+    grpc_url: Option<String>,
     chain_id: String,
     endpoint: String,
 }
@@ -86,6 +87,7 @@ impl NetworkConfig {
         Ok(Self {
             node: node_from_legacy_config(chain_id, endpoint)?,
             archive_rpc_url: archive_rpc_url_from_legacy_config(chain_id, endpoint),
+            grpc_url: grpc_url_from_legacy_config(chain_id, endpoint),
             chain_id: chain_id.to_owned(),
             endpoint: endpoint.to_owned(),
         })
@@ -213,7 +215,24 @@ async fn execute_call_trace_in_process(
         show_effects: false,
         overwrite: true,
     };
-    let output_root = if let Some(archive_rpc_url) = &network.archive_rpc_url {
+    let output_root = if let Some(grpc_url) = &network.grpc_url {
+        let store = GrpcDataStore::new(network.node.clone(), grpc_url, env!("CARGO_PKG_VERSION"))?;
+        let digests = vec![tx_digest.to_owned()];
+        run_replay(
+            &store,
+            output_dir.path(),
+            &digests,
+            &network.node,
+            stable_config.overwrite,
+            stable_config.trace,
+            false,
+            stable_config.terminate_early,
+            false,
+            true,
+        )
+        .await?;
+        output_dir.path().to_path_buf()
+    } else if let Some(archive_rpc_url) = &network.archive_rpc_url {
         let store = ArchiveRpcDataStore::new(
             network.node.clone(),
             archive_rpc_url,
@@ -337,6 +356,13 @@ fn fallback_transfer_objects_traces(
         .any(|command| matches!(command, SuiCommand::TransferObjects(_, _)))
     {
         return Ok(vec![]);
+    }
+
+    if let Some(grpc_url) = &network.grpc_url {
+        let object_store =
+            GrpcDataStore::new(network.node.clone(), grpc_url, env!("CARGO_PKG_VERSION"))
+                .context("failed to create gRPC object store for TransferObjects fallback")?;
+        return fallback_transfer_objects_traces_with_store(&object_store, transaction_data, ptb);
     }
 
     if let Some(archive_rpc_url) = &network.archive_rpc_url {
@@ -499,7 +525,27 @@ fn node_from_legacy_config(chain_id: &str, endpoint: &str) -> Result<Node> {
     }
 }
 
+// An endpoint prefixed with `grpc://`/`grpcs://`/`grpc:` opts the chain into the
+// gRPC (`sui.rpc.v2`) data store instead of JSON-RPC/GraphQL.
+fn grpc_url_from_legacy_config(_chain_id: &str, endpoint: &str) -> Option<String> {
+    if looks_like_grpc_endpoint(endpoint) {
+        Some(endpoint.to_owned())
+    } else {
+        None
+    }
+}
+
+fn looks_like_grpc_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with("grpc://")
+        || endpoint.starts_with("grpcs://")
+        || endpoint.starts_with("grpc:")
+}
+
 fn archive_rpc_url_from_legacy_config(chain_id: &str, endpoint: &str) -> Option<String> {
+    // gRPC endpoints are served by the gRPC store, not the JSON-RPC archive store.
+    if looks_like_grpc_endpoint(endpoint) {
+        return None;
+    }
     let endpoint = normalized_endpoint(endpoint);
     match endpoint {
         "mainnet" | MAINNET_RPC_URL => return Some(MAINNET_RPC_URL.to_owned()),
@@ -618,7 +664,8 @@ mod tests {
             Node::Mainnet
         ));
         assert_eq!(
-            archive_rpc_url_from_legacy_config("1001", "https://archive.example.com:443").as_deref(),
+            archive_rpc_url_from_legacy_config("1001", "https://archive.example.com:443")
+                .as_deref(),
             Some("https://archive.example.com:443")
         );
         assert!(matches!(
@@ -626,7 +673,8 @@ mod tests {
             Node::Testnet
         ));
         assert_eq!(
-            archive_rpc_url_from_legacy_config("1002", "https://archive.example.com:443").as_deref(),
+            archive_rpc_url_from_legacy_config("1002", "https://archive.example.com:443")
+                .as_deref(),
             Some("https://archive.example.com:443")
         );
     }

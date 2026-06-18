@@ -9,6 +9,7 @@
 mod archive_rpc;
 mod filesystem;
 mod graphql;
+mod grpc;
 mod in_memory;
 mod in_memory_lru;
 mod json_rpc;
@@ -20,6 +21,7 @@ pub use filesystem::{
     OBJECTS_DIR, ROOT_VERSIONS_FILE, TRANSACTION_DIR,
 };
 pub use graphql::DataStore;
+pub use grpc::GrpcDataStore;
 pub use in_memory::InMemoryStore;
 pub use in_memory_lru::LruMemoryStore;
 pub use json_rpc::ArchiveDataStore;
