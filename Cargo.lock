@@ -14832,11 +14832,19 @@ dependencies = [
  "cynic-codegen",
  "fastcrypto",
  "lru 0.10.1",
+ "move-core-types",
  "mysten-common",
+ "prost-types 0.14.1",
  "reqwest",
  "serde",
+ "serde_json",
+ "sui-framework",
+ "sui-json-rpc-types",
+ "sui-rpc",
+ "sui-sdk",
  "sui-types",
  "tokio",
+ "tonic 0.14.6",
  "tracing",
 ]
 
@@ -17437,6 +17445,29 @@ dependencies = [
  "tokio",
  "tracing",
  "typed-store",
+]
+
+[[package]]
+name = "sui-trace-server"
+version = "1.76.1"
+dependencies = [
+ "anyhow",
+ "axum 0.8.3",
+ "axum-server",
+ "bcs",
+ "hex",
+ "move-binary-format",
+ "move-core-types",
+ "move-trace-format",
+ "serde",
+ "serde_json",
+ "sui-data-store",
+ "sui-replay-2",
+ "sui-types",
+ "tempfile",
+ "tokio",
+ "tower-http 0.5.2",
+ "tracing-subscriber",
 ]
 
 [[package]]

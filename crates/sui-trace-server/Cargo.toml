@@ -1,0 +1,26 @@
+[package]
+name = "sui-trace-server"
+edition = "2024"
+version.workspace = true
+authors = ["Sentio <dev@sentio.xyz>"]
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+bcs.workspace = true
+hex.workspace = true
+move-binary-format.workspace = true
+move-core-types.workspace = true
+move-trace-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sui-data-store.workspace = true
+sui-replay-2 = { workspace = true, features = ["tracing"] }
+sui-types.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tower-http.workspace = true
+tracing-subscriber.workspace = true
