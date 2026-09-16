@@ -171,6 +171,7 @@ members = [
     "crates/sui-proxy",
     "crates/sui-replay",
     "crates/sui-replay-2",
+    "crates/sui-trace-server",
     "crates/sui-rosetta",
     "crates/sui-rpc-api",
     "crates/sui-rpc-benchmark",
