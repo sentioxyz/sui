@@ -56,6 +56,11 @@ use sui_types::{
 use tracing::debug;
 
 const GRPC_OBJECT_CHUNK_SIZE: usize = 256;
+/// tonic's default `max_decoding_message_size` is 4 MiB. A `batch_get_objects`
+/// chunk of full-bcs packages can exceed that (the whole revision history of a
+/// system package is fetched in one batch), so raise the ceiling well above any
+/// realistic chunk. Overridable via `SUI_DATA_STORE_GRPC_MAX_DECODING_MESSAGE_SIZE`.
+const GRPC_MAX_DECODING_MESSAGE_SIZE: u64 = 128 * 1024 * 1024;
 
 type SystemPackageTable = BTreeMap<u64, BTreeMap<ObjectID, SequenceNumber>>;
 
@@ -154,8 +159,15 @@ pub struct GrpcDataStore {
 impl GrpcDataStore {
     pub fn new(node: Node, grpc_url: &str, _version: &str) -> Result<Self, Error> {
         let uri = normalize_grpc_uri(grpc_url);
+        let max_decoding_message_size = env_u64(
+            "SUI_DATA_STORE_GRPC_MAX_DECODING_MESSAGE_SIZE",
+            GRPC_MAX_DECODING_MESSAGE_SIZE,
+        );
         let client = Client::new(uri.clone())
-            .map_err(|err| anyhow!("failed to create gRPC client for {}: {}", uri, err))?;
+            .map_err(|err| anyhow!("failed to create gRPC client for {}: {}", uri, err))?
+            .with_max_decoding_message_size(
+                usize::try_from(max_decoding_message_size).unwrap_or(usize::MAX),
+            );
         Ok(Self {
             node,
             client,
@@ -233,6 +245,71 @@ impl GrpcDataStore {
             let version = object.version().value();
             (object, version)
         }))
+    }
+
+    /// Fetch only the `version` + `previous_transaction` metadata of objects at
+    /// exact (or latest, when `version` is `None`) versions. Preserves request
+    /// order; a missing object maps to `None`.
+    ///
+    /// This is what the system-package revision history needs, and it is ~100 B
+    /// per object where [`Self::fetch_objects`] would move the full package bcs.
+    async fn fetch_object_revisions(
+        &self,
+        requests: &[(ObjectID, Option<u64>)],
+    ) -> Result<Vec<Option<SystemPackageRevision>>, Error> {
+        const REVISION_FIELDS: [&str; 2] = ["version", "previous_transaction"];
+        let mut results = Vec::with_capacity(requests.len());
+        for chunk in requests.chunks(GRPC_OBJECT_CHUNK_SIZE) {
+            let proto_requests = chunk
+                .iter()
+                .map(|(object_id, version)| {
+                    let mut request = proto::GetObjectRequest::default()
+                        .with_object_id(object_id.to_string())
+                        .with_read_mask(FieldMask::from_paths(REVISION_FIELDS));
+                    request.version = *version;
+                    request
+                })
+                .collect::<Vec<_>>();
+            let response = with_retry("batch_get_objects(revisions)", || {
+                let mut client = self.client.clone();
+                let request = proto::BatchGetObjectsRequest::default()
+                    .with_requests(proto_requests.clone())
+                    .with_read_mask(FieldMask::from_paths(REVISION_FIELDS));
+                async move {
+                    client
+                        .ledger_client()
+                        .batch_get_objects(request)
+                        .await
+                        .map(|response| response.into_inner())
+                }
+            })
+            .await?;
+
+            for result in response.objects {
+                match result.to_result() {
+                    Ok(object) => results.push(Some(decode_object_revision(&object)?)),
+                    Err(_) => results.push(None),
+                }
+            }
+        }
+
+        if results.len() != requests.len() {
+            bail!(
+                "gRPC batch_get_objects(revisions) returned {} results for {} requests",
+                results.len(),
+                requests.len()
+            );
+        }
+        Ok(results)
+    }
+
+    async fn fetch_object_revision(
+        &self,
+        object_id: ObjectID,
+        version: Option<u64>,
+    ) -> Result<Option<SystemPackageRevision>, Error> {
+        let revisions = self.fetch_object_revisions(&[(object_id, version)]).await?;
+        Ok(revisions.into_iter().next().flatten())
     }
 
     async fn version_objects(
@@ -558,22 +635,25 @@ impl GrpcDataStore {
             return Ok(revisions);
         }
 
-        let Some((latest, _)) = self.fetch_object(*package_id, None).await? else {
+        // Only `version` + `previous_transaction` are needed to date revisions, so
+        // ask for exactly those rather than full `bcs`. Every revision of the
+        // package is fetched in one batch, and for `0x2` (~60 revisions, ~4.3 MB
+        // of bcs, referenced by every transaction) the full-bcs form outgrew
+        // tonic's default 4 MiB decode limit in 2026-08 purely through framework
+        // upgrades — which failed every mainnet replay.
+        let Some(latest) = self.fetch_object_revision(*package_id, None).await? else {
             return Ok(Vec::new());
         };
-        let latest_version = latest.version().value();
+        let latest_version = latest.version.value();
 
         let requests = (1..=latest_version)
             .map(|version| (*package_id, Some(version)))
             .collect::<Vec<_>>();
-        let objects = self.fetch_objects(&requests).await?;
-        let mut revisions = objects
+        let mut revisions = self
+            .fetch_object_revisions(&requests)
+            .await?
             .into_iter()
             .flatten()
-            .map(|object| SystemPackageRevision {
-                version: object.version(),
-                previous_transaction: object.previous_transaction,
-            })
             .collect::<Vec<_>>();
         revisions.sort_by_key(|revision| revision.version);
 
@@ -895,6 +975,24 @@ fn decode_object(object: &proto::Object) -> Result<Object, Error> {
         .context("object response missing bcs")?
         .deserialize()
         .context("failed to decode object bcs")
+}
+
+fn decode_object_revision(object: &proto::Object) -> Result<SystemPackageRevision, Error> {
+    let version = object.version.context("object response missing version")?;
+    let previous_transaction = object
+        .previous_transaction
+        .as_deref()
+        .context("object response missing previous_transaction")?;
+    Ok(SystemPackageRevision {
+        version: SequenceNumber::from_u64(version),
+        previous_transaction: TransactionDigest::from_str(previous_transaction).map_err(|err| {
+            anyhow!(
+                "invalid previous_transaction digest {}: {}",
+                previous_transaction,
+                err
+            )
+        })?,
+    })
 }
 
 fn timestamp_to_ms(timestamp: prost_types::Timestamp) -> Result<u64, Error> {
