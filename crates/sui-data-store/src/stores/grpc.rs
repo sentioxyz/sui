@@ -147,6 +147,10 @@ pub struct GrpcDataStore {
     /// object_id -> exact version it was read at by the replayed transaction.
     /// Populated from transaction effects; used to resolve `RootVersion` queries.
     root_version_hints: RwLock<BTreeMap<ObjectID, u64>>,
+    /// (object_id, version) -> object, for exact-version reads. Filled by the
+    /// prefetch of every object the replayed transaction loaded (see
+    /// [`Self::prefetch_hinted_objects`]) and by every exact-version fetch.
+    object_cache: RwLock<BTreeMap<(ObjectID, u64), Object>>,
     epoch_map: RwLock<BTreeMap<u64, EpochData>>,
     checkpoint_protocol_map: RwLock<BTreeMap<u64, u64>>,
     system_package_table: RwLock<SystemPackageTable>,
@@ -172,6 +176,7 @@ impl GrpcDataStore {
             node,
             client,
             root_version_hints: RwLock::new(BTreeMap::new()),
+            object_cache: RwLock::new(BTreeMap::new()),
             epoch_map: RwLock::new(BTreeMap::new()),
             checkpoint_protocol_map: RwLock::new(BTreeMap::new()),
             system_package_table: RwLock::new(BTreeMap::new()),
@@ -184,15 +189,34 @@ impl GrpcDataStore {
 
     /// Fetch objects at exact (or latest, when `version` is `None`) versions.
     /// Preserves request order; a missing object maps to `None`.
+    ///
+    /// Exact-version reads are served from `object_cache` when possible; the
+    /// replay engine asks for objects one at a time, so without the cache every
+    /// dynamic-field read is its own gRPC round trip.
     async fn fetch_objects(
         &self,
         requests: &[(ObjectID, Option<u64>)],
     ) -> Result<Vec<Option<Object>>, Error> {
-        let mut results = Vec::with_capacity(requests.len());
-        for chunk in requests.chunks(GRPC_OBJECT_CHUNK_SIZE) {
+        let mut results: Vec<Option<Object>> = vec![None; requests.len()];
+        let mut pending = Vec::new();
+        {
+            let cache = self.object_cache.read().unwrap();
+            for (index, (object_id, version)) in requests.iter().enumerate() {
+                match version.and_then(|version| cache.get(&(*object_id, version))) {
+                    Some(object) => results[index] = Some(object.clone()),
+                    None => pending.push((index, (*object_id, *version))),
+                }
+            }
+        }
+        if pending.is_empty() {
+            return Ok(results);
+        }
+
+        let mut fetched = Vec::with_capacity(pending.len());
+        for chunk in pending.chunks(GRPC_OBJECT_CHUNK_SIZE) {
             let proto_requests = chunk
                 .iter()
-                .map(|(object_id, version)| {
+                .map(|(_, (object_id, version))| {
                     let mut request = proto::GetObjectRequest::default()
                         .with_object_id(object_id.to_string())
                         .with_read_mask(FieldMask::from_paths(["bcs"]));
@@ -217,22 +241,57 @@ impl GrpcDataStore {
 
             for result in response.objects {
                 match result.to_result() {
-                    Ok(object) => results.push(Some(decode_object(&object)?)),
+                    Ok(object) => fetched.push(Some(decode_object(&object)?)),
                     // A per-object error is a normal "not found", matching the
                     // JSON-RPC stores' None for deleted/missing objects.
-                    Err(_) => results.push(None),
+                    Err(_) => fetched.push(None),
                 }
             }
         }
 
-        if results.len() != requests.len() {
+        if fetched.len() != pending.len() {
             bail!(
                 "gRPC batch_get_objects returned {} results for {} requests",
-                results.len(),
-                requests.len()
+                fetched.len(),
+                pending.len()
             );
         }
+
+        let mut cache = self.object_cache.write().unwrap();
+        for ((index, (object_id, _)), object) in pending.into_iter().zip(fetched) {
+            if let Some(object) = &object {
+                cache.insert((object_id, object.version().value()), object.clone());
+            }
+            results[index] = object;
+        }
         Ok(results)
+    }
+
+    /// Fetch, in as few batches as possible, every object the replayed
+    /// transaction is known (from its effects) to have read, so the replay's
+    /// one-object-at-a-time reads become cache hits. Best effort: a failure here
+    /// only means the reads fall back to individual fetches.
+    async fn prefetch_hinted_objects(&self) {
+        let requests = {
+            let hints = self.root_version_hints.read().unwrap();
+            let cache = self.object_cache.read().unwrap();
+            hints
+                .iter()
+                .filter(|(object_id, version)| !cache.contains_key(&(**object_id, **version)))
+                .map(|(object_id, version)| (*object_id, Some(*version)))
+                .collect::<Vec<_>>()
+        };
+        if requests.is_empty() {
+            return;
+        }
+        if let Err(err) = self.fetch_objects(&requests).await {
+            debug!(
+                op = "grpc_prefetch_failed",
+                objects = requests.len(),
+                error = %err,
+                "object prefetch failed; falling back to per-object reads"
+            );
+        }
     }
 
     async fn fetch_object(
@@ -829,6 +888,7 @@ impl GrpcDataStore {
             .with_context(|| format!("transaction {} response missing checkpoint", digest))?;
 
         self.record_version_hints(proto_effects);
+        self.prefetch_hinted_objects().await;
 
         Ok(Some(TransactionInfo {
             data,
