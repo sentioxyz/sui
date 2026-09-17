@@ -188,6 +188,46 @@ impl RootedType {
     }
 }
 
+impl RuntimeLocation {
+    /// Whether this location is rooted in a global (a value loaded by reference from a native or
+    /// passed in externally) rather than in a local or on the stack.
+    fn is_global_rooted(&self) -> bool {
+        match self {
+            RuntimeLocation::Global(_) => true,
+            RuntimeLocation::Indexed(parent, _) => parent.is_global_rooted(),
+            RuntimeLocation::Local(_, _) | RuntimeLocation::Stack(_) => false,
+        }
+    }
+}
+
+/// Whether a reference `TraceValue` carries a serialised snapshot of the root value it points
+/// into. Same policy as the current `move-vm-runtime` tracer; see the documentation there.
+///
+/// Building the snapshot converts the *entire* root runtime value into a `SerializableMoveValue`,
+/// which for a reference into a large object recurs on every push, pop and local read of the
+/// reference and dominates the trace by orders of magnitude, so each emission site states what
+/// its consumers actually need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootSnapshot {
+    /// Serialise the root value: `Write` effects and the tracer's own fallback global snapshots.
+    Keep,
+    /// Record the location only: `Push`, `Pop` and `Read` effects.
+    Elide,
+    /// Serialise the root value only for references rooted in a local: frame parameters and
+    /// return values, whose global roots are recoverable from `DataLoad`/`Write` events.
+    KeepLocalRoots,
+}
+
+impl RootSnapshot {
+    fn keeps(self, root: &RuntimeLocation) -> bool {
+        match self {
+            RootSnapshot::Keep => true,
+            RootSnapshot::Elide => false,
+            RootSnapshot::KeepLocalRoots => !root.is_global_rooted(),
+        }
+    }
+}
+
 impl VMTracer<'_> {
     /// Emit an error event to the trace if `true`
     fn emit_trace_error_if_err(&mut self, is_err: bool) {
@@ -299,7 +339,7 @@ impl VMTracer<'_> {
             // We are pushing a global that was not in a local, this is not fine.
             return None;
         };
-        let v = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+        let v = self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Keep)?;
         let new_state = GlobalValue::Value(v);
         let global = self.loaded_data.get_mut(idx)?;
         let GlobalValue::AtStackOffset(..) = std::mem::replace(global, new_state) else {
@@ -317,6 +357,7 @@ impl VMTracer<'_> {
         frame: Option<&Frame>,
         interpreter: &Interpreter,
         stack_idx: usize,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         if stack_idx >= interpreter.operand_stack.value.len() {
             return None;
@@ -326,6 +367,7 @@ impl VMTracer<'_> {
             &RuntimeLocation::Stack(offset - stack_idx),
             frame,
             interpreter,
+            root_snapshot,
         )
     }
 
@@ -336,34 +378,44 @@ impl VMTracer<'_> {
         frame: &Frame,
         interpreter: &Interpreter,
         local_index: usize,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         self.resolve_location(
             &RuntimeLocation::Local(self.current_frame_identifier()?, local_index),
             Some(frame),
             interpreter,
+            root_snapshot,
         )
     }
 
-    /// Shared utility function that creates a TraceValue from a runtime location along with
-    /// grabbing the snapshot of the value.
+    /// Shared utility function that creates a TraceValue from a runtime location. A runtime value
+    /// always carries its value; a reference carries the snapshot of its root only when
+    /// `root_snapshot` asks for it, since producing it serialises the whole root.
     fn make_trace_value(
         &self,
         location: RuntimeLocation,
         ref_info: Option<RefType>,
         frame: Option<&Frame>,
         interpreter: &Interpreter,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
-        let value = self.root_location_snapshot(&location, frame, interpreter)?;
-        Some(match ref_info {
-            Some(RefType::Imm) => TraceValue::ImmRef {
-                location: location.as_trace_location(),
-                snapshot: Box::new(value),
-            },
-            Some(RefType::Mut) => TraceValue::MutRef {
-                location: location.as_trace_location(),
-                snapshot: Box::new(value),
-            },
-            None => TraceValue::RuntimeValue { value },
+        let Some(ref_type) = ref_info else {
+            let value = self.root_location_snapshot(&location, frame, interpreter)?;
+            return Some(TraceValue::RuntimeValue { value });
+        };
+        let snapshot = if root_snapshot.keeps(&location) {
+            Some(Box::new(self.root_location_snapshot(
+                &location,
+                frame,
+                interpreter,
+            )?))
+        } else {
+            None
+        };
+        let location = location.as_trace_location();
+        Some(match ref_type {
+            RefType::Imm => TraceValue::ImmRef { location, snapshot },
+            RefType::Mut => TraceValue::MutRef { location, snapshot },
         })
     }
 
@@ -416,6 +468,7 @@ impl VMTracer<'_> {
         loc: &RuntimeLocation,
         frame: Option<&Frame>,
         interpreter: &Interpreter,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         Some(match loc {
             RuntimeLocation::Stack(sidx) => {
@@ -426,7 +479,7 @@ impl VMTracer<'_> {
                     .as_ref()
                     .map(|(_, l)| l.clone())
                     .unwrap_or_else(|| loc.clone());
-                self.make_trace_value(location, ref_ty, frame, interpreter)?
+                self.make_trace_value(location, ref_ty, frame, interpreter, root_snapshot)?
             }
             RuntimeLocation::Local(fidx, lidx) => {
                 let ty = &self.active_frames.get(fidx)?.locals_types.get(*lidx)?;
@@ -443,21 +496,31 @@ impl VMTracer<'_> {
                         loc
                     ),
                 };
-                self.make_trace_value(location, ref_ty, frame, interpreter)?
+                self.make_trace_value(location, ref_ty, frame, interpreter, root_snapshot)?
             }
             RuntimeLocation::Indexed(location, _) => {
-                self.resolve_location(location, frame, interpreter)?
+                self.resolve_location(location, frame, interpreter, root_snapshot)?
             }
             RuntimeLocation::Global(id) => match &self.loaded_data.get(id)? {
                 GlobalValue::InLocal(fidx, lidx) => self.resolve_location(
                     &RuntimeLocation::Local(*fidx, *lidx),
                     frame,
                     interpreter,
+                    root_snapshot,
                 )?,
-                GlobalValue::Value(trace_value) => Some(trace_value.clone())?,
-                GlobalValue::AtStackOffset(idx) => {
-                    self.resolve_location(&RuntimeLocation::Stack(*idx), frame, interpreter)?
+                GlobalValue::Value(trace_value) => {
+                    if root_snapshot.keeps(&RuntimeLocation::Global(*id)) {
+                        trace_value.clone()
+                    } else {
+                        trace_value.without_snapshot()
+                    }
                 }
+                GlobalValue::AtStackOffset(idx) => self.resolve_location(
+                    &RuntimeLocation::Stack(*idx),
+                    frame,
+                    interpreter,
+                    root_snapshot,
+                )?,
             },
         })
     }
@@ -528,7 +591,7 @@ impl VMTracer<'_> {
                     frame,
                     interpreter,
                 )?,
-                GlobalValue::Value(trace_value) => Some(trace_value.snapshot().clone())?,
+                GlobalValue::Value(trace_value) => trace_value.snapshot()?.clone(),
                 GlobalValue::AtStackOffset(idx) => {
                     self.root_location_snapshot(&RuntimeLocation::Stack(*idx), frame, interpreter)?
                 }
@@ -563,11 +626,11 @@ impl VMTracer<'_> {
         let trace_value = match ref_type {
             RefType::Imm => TraceValue::ImmRef {
                 location: location.as_trace_location(),
-                snapshot: Box::new(value),
+                snapshot: Some(Box::new(value)),
             },
             RefType::Mut => TraceValue::MutRef {
                 location: location.as_trace_location(),
-                snapshot: Box::new(value),
+                snapshot: Some(Box::new(value)),
             },
         };
         (id, trace_value)
@@ -647,9 +710,11 @@ impl VMTracer<'_> {
                 match ref_type {
                     Some(ref_type) => {
                         let (id, trace_value) = self.emit_data_load(move_value.into(), &ref_type);
-                        self.loaded_data
-                            .insert(id, GlobalValue::Value(trace_value.clone()));
-                        Some((trace_value, Some(id)))
+                        // The parameter refers to the global just loaded; consumers read its
+                        // value from the `DataLoad`, so the frame records the location only.
+                        let parameter = trace_value.without_snapshot();
+                        self.loaded_data.insert(id, GlobalValue::Value(trace_value));
+                        Some((parameter, Some(id)))
                     }
                     None => Some((
                         TraceValue::RuntimeValue {
@@ -739,9 +804,10 @@ impl VMTracer<'_> {
                 match ref_type {
                     Some(ref_type) => {
                         let (id, trace_value) = self.emit_data_load(move_value.into(), &ref_type);
-                        self.loaded_data
-                            .insert(id, GlobalValue::Value(trace_value.clone()));
-                        Some(trace_value)
+                        // As for initial-frame parameters: the `DataLoad` carries the value.
+                        let returned = trace_value.without_snapshot();
+                        self.loaded_data.insert(id, GlobalValue::Value(trace_value));
+                        Some(returned)
                     }
                     None => Some(TraceValue::RuntimeValue {
                         value: move_value.into(),
@@ -777,7 +843,14 @@ impl VMTracer<'_> {
             .rev()
             .enumerate()
             .map(|(local_idx, stack_idx)| {
-                let val = self.resolve_stack_value(Some(calling_frame), interpreter, stack_idx);
+                // Reference parameters rooted in a global are recoverable by consumers from the
+                // `DataLoad`/`Write` events; only local roots need their snapshot here.
+                let val = self.resolve_stack_value(
+                    Some(calling_frame),
+                    interpreter,
+                    stack_idx,
+                    RootSnapshot::KeepLocalRoots,
+                );
                 // NB: it is important for us to resolve the value _before_ we register that any
                 // global is stored there.
                 self.store_global(interpreter, new_frame_idx, stack_idx, local_idx)?;
@@ -869,14 +942,16 @@ impl VMTracer<'_> {
 
         let return_values = (0..function.return_type_count())
             .rev()
-            .map(|i| self.resolve_stack_value(Some(frame), interpreter, i))
+            .map(|i| {
+                self.resolve_stack_value(Some(frame), interpreter, i, RootSnapshot::KeepLocalRoots)
+            })
             .collect::<Option<Vec<_>>>()?;
 
         // Note that when a native function frame closes the values returned by the native function
         // are all pushed on the operand stack.
         if function.is_native() {
             for val in &return_values {
-                self.trace.effect(EF::Push(val.clone()));
+                self.trace.effect(EF::Push(val.without_snapshot()));
             }
         }
 
@@ -906,7 +981,8 @@ impl VMTracer<'_> {
         let popn = |n: usize| {
             let mut effects = vec![];
             for i in 0..n {
-                let v = self.resolve_stack_value(Some(frame), interpreter, i)?;
+                let v =
+                    self.resolve_stack_value(Some(frame), interpreter, i, RootSnapshot::Elide)?;
                 effects.push(EF::Pop(v));
             }
             Some(effects)
@@ -990,7 +1066,7 @@ impl VMTracer<'_> {
             B::VecSwap(_) => self.register_pre_effects(popn(3)?),
             B::VecPack(_, n) => self.register_pre_effects(popn(*n as usize)?),
             i @ (B::MoveLoc(l) | B::CopyLoc(l)) => {
-                let v = self.resolve_local(frame, interpreter, *l as usize)?;
+                let v = self.resolve_local(frame, interpreter, *l as usize, RootSnapshot::Elide)?;
                 let effects = vec![EF::Read(Read {
                     location: Location::Local(self.current_frame_identifier()?, *l as usize),
                     root_value_read: v.clone(),
@@ -1000,7 +1076,8 @@ impl VMTracer<'_> {
             }
             B::StLoc(lidx) => {
                 let ty = self.type_stack.last()?.clone();
-                let v = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let v =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 self.store_global(
                     interpreter,
                     self.current_frame_identifier()?,
@@ -1012,7 +1089,8 @@ impl VMTracer<'_> {
                 self.register_pre_effects(effects);
             }
             B::ImmBorrowLoc(l_idx) | B::MutBorrowLoc(l_idx) => {
-                let val = self.resolve_local(frame, interpreter, *l_idx as usize)?;
+                let val =
+                    self.resolve_local(frame, interpreter, *l_idx as usize, RootSnapshot::Elide)?;
                 let location = Location::Local(self.current_frame_identifier()?, *l_idx as usize);
                 self.register_pre_effects(vec![EF::Read(Read {
                     location,
@@ -1044,10 +1122,16 @@ impl VMTracer<'_> {
                 self.register_pre_effects(popn(field_count as usize)?);
             }
             B::ReadRef => {
-                let ref_value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let ref_value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let location = ref_value.location()?.clone();
                 let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
-                let value = self.resolve_location(&runtime_location, Some(frame), interpreter)?;
+                let value = self.resolve_location(
+                    &runtime_location,
+                    Some(frame),
+                    interpreter,
+                    RootSnapshot::Elide,
+                )?;
                 self.register_pre_effects(vec![
                     EF::Pop(ref_value),
                     EF::Read(Read {
@@ -1137,7 +1221,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = vec![EF::Push(value)];
                 let effects = self.register_post_effects(effects);
                 self.trace
@@ -1154,7 +1239,8 @@ impl VMTracer<'_> {
                     self.invalidate_local(frame, interpreter, *l as usize)?;
                 }
                 // This was pushed on the stack during execution so read it off from there.
-                let v = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let v =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(v.clone())]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1176,7 +1262,8 @@ impl VMTracer<'_> {
                 self.type_stack.pop()?;
                 self.type_stack.push(annot_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = vec![EF::Push(value.clone())];
                 let effects = self.register_post_effects(effects);
                 self.trace
@@ -1185,10 +1272,13 @@ impl VMTracer<'_> {
             B::StLoc(lidx) => {
                 let ty = self.type_stack.pop()?;
                 self.insert_local(*lidx as usize, ty.clone())?;
-                let v = self.resolve_local(frame, interpreter, *lidx as usize)?;
+                // Storing a reference into a local aliases a root without changing it, so the
+                // snapshot is elided; a stored value is a runtime value and kept as is.
+                let v =
+                    self.resolve_local(frame, interpreter, *lidx as usize, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Write(Write {
                     location: Location::Local(self.current_frame_identifier()?, *lidx as usize),
-                    root_value_after_write: v.clone(),
+                    root_value_after_write: v,
                 })]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1209,7 +1299,8 @@ impl VMTracer<'_> {
                 let a_ty = self.type_stack.pop()?;
                 self.type_stack.push(a_ty);
 
-                let result = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let result =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(result)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1223,7 +1314,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1247,7 +1339,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1267,7 +1360,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 let TypeTag::Struct(s_type) = loader.type_to_type_tag(&struct_type).ok()? else {
                     panic!("Expected struct, got {:#?}", struct_type);
@@ -1290,7 +1384,8 @@ impl VMTracer<'_> {
 
                 let mut effects = vec![];
                 for i in (0..s.fields.len()).rev() {
-                    let value = self.resolve_stack_value(Some(frame), interpreter, i)?;
+                    let value =
+                        self.resolve_stack_value(Some(frame), interpreter, i, RootSnapshot::Elide)?;
                     effects.push(EF::Push(value));
                 }
 
@@ -1306,7 +1401,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1319,7 +1415,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1327,7 +1424,8 @@ impl VMTracer<'_> {
             B::Not => {
                 let a_ty = self.type_stack.pop()?;
                 self.type_stack.push(a_ty);
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1350,7 +1448,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1371,7 +1470,8 @@ impl VMTracer<'_> {
                 };
                 self.type_stack.push(a_layout);
 
-                let val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1381,7 +1481,7 @@ impl VMTracer<'_> {
                 let _value_ty = self.type_stack.pop()?;
                 let location = reference_ty.ref_type.as_ref()?.1.clone();
                 let root_value_after_write = self
-                    .resolve_location(&location, Some(frame), interpreter)?
+                    .resolve_location(&location, Some(frame), interpreter, RootSnapshot::Keep)?
                     .clone();
                 let effects = self.register_post_effects(vec![EF::Write(Write {
                     location: location.as_trace_location(),
@@ -1394,7 +1494,8 @@ impl VMTracer<'_> {
                 let mut reference_ty = self.type_stack.pop()?;
                 reference_ty.ref_type.as_mut()?.0 = RefType::Imm;
                 self.type_stack.push(reference_ty);
-                let reference_val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let reference_val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(reference_val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1423,7 +1524,8 @@ impl VMTracer<'_> {
                     ref_type: Some((ref_type, field_location)),
                 };
                 self.type_stack.push(a_layout);
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1451,7 +1553,8 @@ impl VMTracer<'_> {
                     ref_type: Some((ref_type, field_location)),
                 };
                 self.type_stack.push(a_layout);
-                let value = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let value =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(value)]);
                 let ty_args = slayout.type_.type_params.clone();
                 self.trace
@@ -1472,7 +1575,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1501,7 +1605,8 @@ impl VMTracer<'_> {
                     ref_type: Some((ref_type, location)),
                 };
                 self.type_stack.push(a_layout);
-                let val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1513,7 +1618,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let len = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let len =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(len)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1526,7 +1632,12 @@ impl VMTracer<'_> {
                 };
                 let location = reference_val.location()?.clone();
                 let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
-                let snap = self.resolve_location(&runtime_location, Some(frame), interpreter)?;
+                let snap = self.resolve_location(
+                    &runtime_location,
+                    Some(frame),
+                    interpreter,
+                    RootSnapshot::Keep,
+                )?;
                 let effects = self.register_post_effects(vec![EF::Write(Write {
                     location,
                     root_value_after_write: snap,
@@ -1544,7 +1655,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let v = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let v =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(v)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1563,7 +1675,12 @@ impl VMTracer<'_> {
                 }
                 let mut effects = vec![];
                 for i in (0..*n).rev() {
-                    let value = self.resolve_stack_value(Some(frame), interpreter, i as usize)?;
+                    let value = self.resolve_stack_value(
+                        Some(frame),
+                        interpreter,
+                        i as usize,
+                        RootSnapshot::Elide,
+                    )?;
                     effects.push(EF::Push(value));
                 }
                 let effects = self.register_post_effects(effects);
@@ -1575,7 +1692,8 @@ impl VMTracer<'_> {
                 self.type_stack.pop()?;
                 let v_ref = self.type_stack.pop()?;
                 let location = v_ref.ref_type.as_ref()?.1.clone();
-                let snap = self.resolve_location(&location, Some(frame), interpreter)?;
+                let snap =
+                    self.resolve_location(&location, Some(frame), interpreter, RootSnapshot::Keep)?;
                 let effects = self.register_post_effects(vec![EF::Write(Write {
                     location: location.as_trace_location(),
                     root_value_after_write: snap,
@@ -1596,7 +1714,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1617,7 +1736,8 @@ impl VMTracer<'_> {
                     ref_type: None,
                 };
                 self.type_stack.push(a_layout);
-                let val = self.resolve_stack_value(Some(frame), interpreter, 0)?;
+                let val =
+                    self.resolve_stack_value(Some(frame), interpreter, 0, RootSnapshot::Elide)?;
                 let effects = self.register_post_effects(vec![EF::Push(val)]);
                 self.trace
                     .instruction(instruction, vec![], effects, remaining_gas, pc);
@@ -1645,7 +1765,12 @@ impl VMTracer<'_> {
                     self.type_stack.push(a_layout);
                 }
                 for i in 0..field_count {
-                    let value = self.resolve_stack_value(Some(frame), interpreter, i as usize)?;
+                    let value = self.resolve_stack_value(
+                        Some(frame),
+                        interpreter,
+                        i as usize,
+                        RootSnapshot::Elide,
+                    )?;
                     effects.push(EF::Push(value));
                 }
                 let effects = self.register_post_effects(effects);
@@ -1691,7 +1816,12 @@ impl VMTracer<'_> {
                     self.type_stack.push(a_layout);
                 }
                 for i in 0..field_count {
-                    let value = self.resolve_stack_value(Some(frame), interpreter, i as usize)?;
+                    let value = self.resolve_stack_value(
+                        Some(frame),
+                        interpreter,
+                        i as usize,
+                        RootSnapshot::Elide,
+                    )?;
                     effects.push(EF::Push(value));
                 }
                 let effects = self.register_post_effects(effects);

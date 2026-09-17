@@ -273,26 +273,33 @@ impl TraceMemoryState {
                 if self.apply_current_vector_write(&write.location) {
                     return;
                 }
+                // A write whose root snapshot was elided stored a reference into a local: it
+                // aliases a root without changing any value, so there is nothing to apply.
+                let Some(root_after_write) =
+                    trace_value_root_snapshot(&write.root_value_after_write)
+                else {
+                    return;
+                };
                 let exact_write_snapshot = self.current_write_ref_exact_snapshot(&write.location);
                 if let Some(exact_write_snapshot) = exact_write_snapshot {
                     let mut applied =
                         self.write_exact_snapshot(&write.location, exact_write_snapshot.clone());
                     if let Some(alias_location) = self.aliased_location(&write.location) {
-                        applied |= self.write_exact_snapshot(&alias_location, exact_write_snapshot);
+                        applied |= self
+                            .write_exact_snapshot(&alias_location, exact_write_snapshot.clone());
                     }
                     if !applied {
                         applied = self.write_exact_snapshot_into_trace_root(
                             &write.location,
-                            trace_value_root_snapshot(&write.root_value_after_write).clone(),
-                            self.current_write_ref_exact_snapshot(&write.location)
-                                .expect("exact write snapshot was just checked"),
+                            root_after_write.clone(),
+                            exact_write_snapshot,
                         );
                     }
                     if applied {
                         return;
                     }
                 }
-                let snapshot = trace_value_root_snapshot(&write.root_value_after_write).clone();
+                let snapshot = root_after_write.clone();
                 self.write_root_snapshot(&write.location, snapshot.clone());
                 if let Some(alias_location) = self.local_root_alias_location(&write.location) {
                     self.write_root_snapshot(&alias_location, snapshot);
@@ -401,7 +408,7 @@ impl TraceMemoryState {
         if reference.location()? != location {
             return None;
         }
-        Some(trace_value_snapshot(value).clone())
+        Some(trace_value_snapshot(value)?.clone())
     }
 
     fn apply_current_vector_write(&mut self, location: &TraceLocation) -> bool {
@@ -444,7 +451,7 @@ impl TraceMemoryState {
         if reference.location()? != location {
             return None;
         }
-        Some(VectorMutation::Push(trace_value_snapshot(value).clone()))
+        Some(VectorMutation::Push(trace_value_snapshot(value)?.clone()))
     }
 
     fn current_vec_swap_mutation(&self, location: &TraceLocation) -> Option<VectorMutation> {
@@ -500,21 +507,24 @@ impl TraceMemoryState {
         Some(())
     }
 
+    /// Replace a global-rooted reference's snapshot with the current state of that global. The
+    /// tracer elides the snapshot of global-rooted frame parameters and returns for exactly this
+    /// reason: the `DataLoad` and `Write` events already carry the value.
     fn trace_value_with_current_global_snapshot(&self, value: TraceValue) -> TraceValue {
         match value {
             TraceValue::RuntimeValue { value } => TraceValue::RuntimeValue { value },
             TraceValue::ImmRef { location, snapshot } => TraceValue::ImmRef {
-                snapshot: Box::new(
-                    self.current_global_root_snapshot(&location)
-                        .unwrap_or_else(|| *snapshot),
-                ),
+                snapshot: self
+                    .current_global_root_snapshot(&location)
+                    .map(Box::new)
+                    .or(snapshot),
                 location,
             },
             TraceValue::MutRef { location, snapshot } => TraceValue::MutRef {
-                snapshot: Box::new(
-                    self.current_global_root_snapshot(&location)
-                        .unwrap_or_else(|| *snapshot),
-                ),
+                snapshot: self
+                    .current_global_root_snapshot(&location)
+                    .map(Box::new)
+                    .or(snapshot),
                 location,
             },
         }
@@ -1079,7 +1089,9 @@ fn split_module_for_source(module_id: &str) -> (String, String) {
 }
 
 fn trace_value_to_json(value: &TraceValue) -> Value {
-    serializable_move_value_to_json(trace_value_snapshot(value))
+    // A reference whose root snapshot is unavailable (elided by the tracer and not recoverable
+    // from the loaded state) has no renderable value.
+    trace_value_snapshot(value).map_or_else(unknown_value, serializable_move_value_to_json)
 }
 
 fn input_trace_value_to_json(frame: &Frame, index: usize, value: &TraceValue) -> Value {
@@ -1109,17 +1121,17 @@ fn input_trace_value_to_json(frame: &Frame, index: usize, value: &TraceValue) ->
             && index == 1
             && matches!(
                 trace_value_snapshot(value),
-                SerializableMoveValue::Vector(values) if values.is_empty()
+                Some(SerializableMoveValue::Vector(values)) if values.is_empty()
             ))
         || (frame.function_name.as_str() == "merge_coins"
             && matches!(
                 trace_value_snapshot(value),
-                SerializableMoveValue::Vector(values) if values.is_empty()
+                Some(SerializableMoveValue::Vector(values)) if values.is_empty()
             ))
         || (frame.function_name.as_str() == "swapWithReturn"
             && matches!(
                 trace_value_snapshot(value),
-                SerializableMoveValue::Vector(values) if values.is_empty()
+                Some(SerializableMoveValue::Vector(values)) if values.is_empty()
             ))
         || is_router_swap_cap_trace_value(value)
     {
@@ -1205,7 +1217,7 @@ fn is_ref_trace_value(value: &TraceValue) -> bool {
 fn is_coin_vector_trace_value(value: &TraceValue) -> bool {
     matches!(
         trace_value_snapshot(value),
-        SerializableMoveValue::Vector(values) if values.iter().any(is_coin_move_value)
+        Some(SerializableMoveValue::Vector(values)) if values.iter().any(is_coin_move_value)
     )
 }
 
@@ -1216,7 +1228,7 @@ fn is_coin_move_value(value: &SerializableMoveValue) -> bool {
 fn is_router_swap_cap_trace_value(value: &TraceValue) -> bool {
     matches!(
         trace_value_snapshot(value),
-        SerializableMoveValue::Struct(value)
+        Some(SerializableMoveValue::Struct(value))
             if value.type_.module.as_str() == "router"
                 && value.type_.name.as_str() == "RouterSwapCapExtended"
     )
@@ -1257,18 +1269,25 @@ fn legacy_unknown_return(function_name: &str) -> bool {
     )
 }
 
-fn trace_value_root_snapshot(value: &TraceValue) -> &SerializableMoveValue {
+/// The root value a trace value carries: the runtime value itself, or a reference's root
+/// snapshot. `None` for a reference whose root snapshot the tracer elided.
+fn trace_value_root_snapshot(value: &TraceValue) -> Option<&SerializableMoveValue> {
     match value {
-        TraceValue::RuntimeValue { value } => value,
-        TraceValue::ImmRef { snapshot, .. } | TraceValue::MutRef { snapshot, .. } => snapshot,
+        TraceValue::RuntimeValue { value } => Some(value),
+        TraceValue::ImmRef { snapshot, .. } | TraceValue::MutRef { snapshot, .. } => {
+            snapshot.as_deref()
+        }
     }
 }
 
-fn trace_value_snapshot(value: &TraceValue) -> &SerializableMoveValue {
+/// The value a trace value denotes: the runtime value itself, or the value at the referenced
+/// location within a reference's root snapshot. `None` if that snapshot was elided.
+fn trace_value_snapshot(value: &TraceValue) -> Option<&SerializableMoveValue> {
     match value {
-        TraceValue::RuntimeValue { value } => value,
+        TraceValue::RuntimeValue { value } => Some(value),
         TraceValue::ImmRef { location, snapshot } | TraceValue::MutRef { location, snapshot } => {
-            value_at_trace_location(snapshot, location).unwrap_or(snapshot)
+            let snapshot = snapshot.as_deref()?;
+            Some(value_at_trace_location(snapshot, location).unwrap_or(snapshot))
         }
     }
 }
@@ -1335,7 +1354,7 @@ fn numeric_value(value: &SerializableMoveValue) -> Option<u128> {
 }
 
 fn numeric_trace_value(value: &TraceValue) -> Option<u128> {
-    numeric_value(trace_value_snapshot(value))
+    numeric_value(trace_value_snapshot(value)?)
 }
 
 fn unknown_value() -> Value {
@@ -1487,7 +1506,7 @@ mod tests {
         });
         let value = TraceValue::ImmRef {
             location: TraceLocation::Indexed(Box::new(TraceLocation::Local(1, 0)), 1),
-            snapshot: Box::new(root),
+            snapshot: Some(Box::new(root)),
         };
 
         assert_eq!(trace_value_to_json(&value), json!("0xabcd"));
@@ -1501,12 +1520,12 @@ mod tests {
         let mut first = frame(1, "0x2", "target", "first");
         first.parameters = vec![TraceValue::MutRef {
             location: location.clone(),
-            snapshot: Box::new(initial.clone()),
+            snapshot: Some(Box::new(initial.clone())),
         }];
         let mut second = frame(2, "0x2", "target", "second");
         second.parameters = vec![TraceValue::MutRef {
             location: location.clone(),
-            snapshot: Box::new(initial.clone()),
+            snapshot: Some(Box::new(initial.clone())),
         }];
 
         let mut builder = MoveTraceBuilder::new();
@@ -1556,12 +1575,12 @@ mod tests {
         let mut first = frame(1, "0x2", "target", "first");
         first.parameters = vec![TraceValue::MutRef {
             location: location.clone(),
-            snapshot: Box::new(initial.clone()),
+            snapshot: Some(Box::new(initial.clone())),
         }];
         let mut second = frame(2, "0x2", "target", "second");
         second.parameters = vec![TraceValue::MutRef {
             location: location.clone(),
-            snapshot: Box::new(initial),
+            snapshot: Some(Box::new(initial)),
         }];
 
         let mut builder = MoveTraceBuilder::new();
@@ -1605,12 +1624,12 @@ mod tests {
         let mut writer = frame(1, "0x2", "target", "writer");
         writer.parameters = vec![TraceValue::MutRef {
             location: field_location.clone(),
-            snapshot: Box::new(initial.clone()),
+            snapshot: Some(Box::new(initial.clone())),
         }];
         let mut reader = frame(2, "0x2", "target", "reader");
         reader.parameters = vec![TraceValue::MutRef {
             location: root_location,
-            snapshot: Box::new(initial.clone()),
+            snapshot: Some(Box::new(initial.clone())),
         }];
 
         let mut builder = MoveTraceBuilder::new();
@@ -1627,7 +1646,7 @@ mod tests {
         builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(
             TraceValue::MutRef {
                 location: field_location.clone(),
-                snapshot: Box::new(initial.clone()),
+                snapshot: Some(Box::new(initial.clone())),
             },
         ))));
         builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(runtime(
@@ -1671,7 +1690,7 @@ mod tests {
         let vector_location = TraceLocation::Indexed(Box::new(root_location.clone()), 0);
         let vector_ref = |snapshot: SerializableMoveValue| TraceValue::MutRef {
             location: vector_location.clone(),
-            snapshot: Box::new(snapshot),
+            snapshot: Some(Box::new(snapshot)),
         };
         let mut writer = frame(1, "0x2", "target", "writer");
         writer.parameters = vec![vector_ref(initial.clone())];
@@ -1770,7 +1789,7 @@ mod tests {
         let mut child = frame(2, "0x2", "target", "child");
         child.parameters = vec![TraceValue::MutRef {
             location: TraceLocation::Local(1, 0),
-            snapshot: Box::new(count_struct(2)),
+            snapshot: Some(Box::new(count_struct(2))),
         }];
 
         let mut builder = MoveTraceBuilder::new();
@@ -1818,9 +1837,9 @@ mod tests {
         let frame = frame(1, "0x1", "vector", "reverse");
         let value = TraceValue::MutRef {
             location: TraceLocation::Local(1, 0),
-            snapshot: Box::new(SerializableMoveValue::Vector(vec![
+            snapshot: Some(Box::new(SerializableMoveValue::Vector(vec![
                 SerializableMoveValue::U8(0xab),
-            ])),
+            ]))),
         };
 
         assert_eq!(input_trace_value_to_json(&frame, 0, &value), json!("?"));
@@ -1883,7 +1902,7 @@ mod tests {
         let frame = frame(1, "0x42", "vec_map", "get");
         let value = TraceValue::ImmRef {
             location: TraceLocation::Local(1, 0),
-            snapshot: Box::new(count_struct(42)),
+            snapshot: Some(Box::new(count_struct(42))),
         };
 
         assert_eq!(input_trace_value_to_json(&frame, 1, &value), json!("?"));
@@ -1894,7 +1913,7 @@ mod tests {
         let frame = frame(1, "0x2", "object", "id_address");
         let value = TraceValue::ImmRef {
             location: TraceLocation::Local(1, 0),
-            snapshot: Box::new(count_struct(42)),
+            snapshot: Some(Box::new(count_struct(42))),
         };
 
         assert_eq!(input_trace_value_to_json(&frame, 0, &value), json!("?"));
@@ -1912,7 +1931,7 @@ mod tests {
     fn reference_returns_match_old_unknown_value() {
         let value = TraceValue::ImmRef {
             location: TraceLocation::Local(1, 0),
-            snapshot: Box::new(SerializableMoveValue::U64(42)),
+            snapshot: Some(Box::new(SerializableMoveValue::U64(42))),
         };
 
         assert_eq!(
@@ -2427,6 +2446,299 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn elided_reference_pops_still_drive_write_ref() {
+        // The tracer elides root snapshots on Push/Pop effects. WRITE_REF must be applied from the
+        // reference's location and the popped value alone, and a frame parameter whose snapshot
+        // was elided must render from the loaded state.
+        let initial = count_struct(1);
+        let root_location = TraceLocation::Global(7);
+        let field_location = TraceLocation::Indexed(Box::new(root_location.clone()), 0);
+        let elided_field_ref = TraceValue::MutRef {
+            location: field_location.clone(),
+            snapshot: None,
+        };
+        let mut writer = frame(1, "0x2", "target", "writer");
+        writer.parameters = vec![elided_field_ref.clone()];
+        let mut reader = frame(2, "0x2", "target", "reader");
+        reader.parameters = vec![TraceValue::MutRef {
+            location: root_location.clone(),
+            snapshot: None,
+        }];
+
+        let mut builder = MoveTraceBuilder::new();
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::DataLoad(DataLoad {
+            ref_type: RefType::Mut,
+            location: root_location,
+            snapshot: initial,
+        }))));
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(writer),
+            gas_left: 100,
+        });
+        builder.push_event(TraceEvent::Instruction {
+            type_parameters: vec![],
+            pc: 1,
+            gas_left: 95,
+            instruction: Box::new("WRITE_REF".to_string()),
+        });
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(elided_field_ref))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(runtime(
+            SerializableMoveValue::U64(2),
+        )))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Write(Write {
+            location: field_location.clone(),
+            root_value_after_write: TraceValue::MutRef {
+                location: field_location,
+                snapshot: Some(Box::new(count_struct(2))),
+            },
+        }))));
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 1,
+            return_: vec![],
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(reader),
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 2,
+            return_: vec![],
+            gas_left: 80,
+        });
+
+        let trace = MoveTraceReader::new(Cursor::new(
+            builder.into_trace().into_compressed_json_bytes(),
+        ))
+        .unwrap();
+        let roots = call_trace_from_reader(trace).unwrap().unwrap();
+
+        assert_eq!(roots[0].inputs[0], json!("1"));
+        assert_eq!(roots[1].inputs[0]["fields"]["count"], json!("2"));
+    }
+
+    #[test]
+    fn elided_reference_pops_still_drive_vector_mutations() {
+        let initial = vector_struct(&[1, 2]);
+        let after_push = vector_struct(&[1, 2, 3]);
+        let after_swap = vector_struct(&[3, 2, 1]);
+        let after_pop = vector_struct(&[3, 2]);
+        let root_location = TraceLocation::Global(8);
+        let vector_location = TraceLocation::Indexed(Box::new(root_location.clone()), 0);
+        let elided_vector_ref = TraceValue::MutRef {
+            location: vector_location.clone(),
+            snapshot: None,
+        };
+        let written = |snapshot: SerializableMoveValue| TraceValue::MutRef {
+            location: vector_location.clone(),
+            snapshot: Some(Box::new(snapshot)),
+        };
+        let mut writer = frame(1, "0x2", "target", "writer");
+        writer.parameters = vec![elided_vector_ref.clone()];
+        let mut reader = frame(2, "0x2", "target", "reader");
+        reader.parameters = vec![elided_vector_ref.clone()];
+
+        let mut builder = MoveTraceBuilder::new();
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::DataLoad(DataLoad {
+            ref_type: RefType::Mut,
+            location: root_location,
+            snapshot: initial,
+        }))));
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(writer),
+            gas_left: 100,
+        });
+        builder.push_event(TraceEvent::Instruction {
+            type_parameters: vec![],
+            pc: 1,
+            gas_left: 95,
+            instruction: Box::new("VEC_PUSH_BACK".to_string()),
+        });
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(runtime(
+            SerializableMoveValue::U64(3),
+        )))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(
+            elided_vector_ref.clone(),
+        ))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Write(Write {
+            location: vector_location.clone(),
+            root_value_after_write: written(after_push),
+        }))));
+        builder.push_event(TraceEvent::Instruction {
+            type_parameters: vec![],
+            pc: 2,
+            gas_left: 94,
+            instruction: Box::new("VEC_SWAP".to_string()),
+        });
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(runtime(
+            SerializableMoveValue::U64(2),
+        )))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(runtime(
+            SerializableMoveValue::U64(0),
+        )))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(
+            elided_vector_ref.clone(),
+        ))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Write(Write {
+            location: vector_location.clone(),
+            root_value_after_write: written(after_swap),
+        }))));
+        builder.push_event(TraceEvent::Instruction {
+            type_parameters: vec![],
+            pc: 3,
+            gas_left: 93,
+            instruction: Box::new("VEC_POP_BACK".to_string()),
+        });
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(elided_vector_ref))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Push(runtime(
+            SerializableMoveValue::U64(1),
+        )))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Write(Write {
+            location: vector_location.clone(),
+            root_value_after_write: written(after_pop),
+        }))));
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 1,
+            return_: vec![],
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(reader),
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 2,
+            return_: vec![],
+            gas_left: 80,
+        });
+
+        let trace = MoveTraceReader::new(Cursor::new(
+            builder.into_trace().into_compressed_json_bytes(),
+        ))
+        .unwrap();
+        let roots = call_trace_from_reader(trace).unwrap().unwrap();
+
+        assert_eq!(roots[1].inputs[0], json!(["3", "2"]));
+    }
+
+    #[test]
+    fn elided_global_reference_return_renders_from_loaded_state() {
+        let location = TraceLocation::Global(7);
+        let mut builder = MoveTraceBuilder::new();
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::DataLoad(DataLoad {
+            ref_type: RefType::Imm,
+            location: location.clone(),
+            snapshot: count_struct(5),
+        }))));
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(frame(1, "0x2", "target", "borrow")),
+            gas_left: 100,
+        });
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 1,
+            return_: vec![TraceValue::ImmRef {
+                location,
+                snapshot: None,
+            }],
+            gas_left: 90,
+        });
+
+        let trace = MoveTraceReader::new(Cursor::new(
+            builder.into_trace().into_compressed_json_bytes(),
+        ))
+        .unwrap();
+        let roots = call_trace_from_reader(trace).unwrap().unwrap();
+
+        assert_eq!(roots[0].return_value[0]["fields"]["count"], json!("5"));
+    }
+
+    #[test]
+    fn elided_reference_without_loaded_state_renders_unknown() {
+        let mut target = frame(1, "0x2", "target", "orphan");
+        target.parameters = vec![TraceValue::MutRef {
+            location: TraceLocation::Global(9),
+            snapshot: None,
+        }];
+        let mut builder = MoveTraceBuilder::new();
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(target),
+            gas_left: 100,
+        });
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 1,
+            return_: vec![],
+            gas_left: 90,
+        });
+
+        let trace = MoveTraceReader::new(Cursor::new(
+            builder.into_trace().into_compressed_json_bytes(),
+        ))
+        .unwrap();
+        let roots = call_trace_from_reader(trace).unwrap().unwrap();
+
+        assert_eq!(roots[0].inputs[0], unknown_value());
+    }
+
+    #[test]
+    fn reference_store_into_local_with_elided_root_leaves_state_untouched() {
+        // `StLoc` of a reference records a `Write` to the local whose root snapshot is elided.
+        // It must neither disturb the loaded state nor panic.
+        let location = TraceLocation::Global(7);
+        let elided_ref = TraceValue::MutRef {
+            location: location.clone(),
+            snapshot: None,
+        };
+        let mut reader = frame(2, "0x2", "target", "reader");
+        reader.parameters = vec![elided_ref.clone()];
+
+        let mut builder = MoveTraceBuilder::new();
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::DataLoad(DataLoad {
+            ref_type: RefType::Mut,
+            location,
+            snapshot: count_struct(1),
+        }))));
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(frame(1, "0x2", "target", "writer")),
+            gas_left: 100,
+        });
+        builder.push_event(TraceEvent::Instruction {
+            type_parameters: vec![],
+            pc: 1,
+            gas_left: 95,
+            instruction: Box::new("ST_LOC".to_string()),
+        });
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Pop(
+            elided_ref.clone(),
+        ))));
+        builder.push_event(TraceEvent::Effect(Box::new(Effect::Write(Write {
+            location: TraceLocation::Local(1, 1),
+            root_value_after_write: elided_ref,
+        }))));
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 1,
+            return_: vec![],
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::OpenFrame {
+            frame: Box::new(reader),
+            gas_left: 90,
+        });
+        builder.push_event(TraceEvent::CloseFrame {
+            frame_id: 2,
+            return_: vec![],
+            gas_left: 80,
+        });
+
+        let trace = MoveTraceReader::new(Cursor::new(
+            builder.into_trace().into_compressed_json_bytes(),
+        ))
+        .unwrap();
+        let roots = call_trace_from_reader(trace).unwrap().unwrap();
+
+        assert_eq!(roots[1].inputs[0]["fields"]["count"], json!("1"));
     }
 
     fn frame(frame_id: usize, address: &str, module: &str, function_name: &str) -> Frame {
