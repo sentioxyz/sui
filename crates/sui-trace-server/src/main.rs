@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
     env,
     fs::File,
+    io::{BufReader, BufWriter, Write},
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
     process::Output,
@@ -166,9 +167,15 @@ async fn run_replay_child(args: impl Iterator<Item = String>) -> Result<()> {
 
     let network = NetworkConfig::new(&chain_id, &endpoint)?;
     let result = execute_call_trace_in_process(&network, &tx_digest).await?;
+    // The result JSON runs to several MB for large traces; serde_json issues one small write
+    // per token, so an unbuffered `File` would spend seconds in syscalls.
     let output_file = File::create(&output_path)
         .with_context(|| format!("failed to create {}", output_path.display()))?;
-    serde_json::to_writer(output_file, &result)
+    let mut output_file = BufWriter::new(output_file);
+    serde_json::to_writer(&mut output_file, &result)
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    output_file
+        .flush()
         .with_context(|| format!("failed to write {}", output_path.display()))?;
     Ok(())
 }
@@ -195,9 +202,11 @@ async fn execute_call_trace_isolated(
         anyhow::bail!("{}", replay_child_error(&output));
     }
 
-    let output_file = File::open(&output_path)
-        .with_context(|| format!("failed to open {}", output_path.display()))?;
-    serde_json::from_reader(output_file)
+    // Read the whole file first: `serde_json::from_reader` on an unbuffered `File` reads one
+    // byte per syscall, which for a multi-MB result costs more than the replay itself.
+    let output = std::fs::read(&output_path)
+        .with_context(|| format!("failed to read {}", output_path.display()))?;
+    serde_json::from_slice(&output)
         .with_context(|| format!("failed to parse {}", output_path.display()))
 }
 
@@ -303,7 +312,7 @@ async fn execute_call_trace_in_process(
 fn transaction_data_from_path(path: &FsPath) -> Result<TransactionData> {
     let transaction_data_file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::from_reader(transaction_data_file)
+    serde_json::from_reader(BufReader::new(transaction_data_file))
         .with_context(|| format!("failed to parse {}", path.display()))
 }
 
