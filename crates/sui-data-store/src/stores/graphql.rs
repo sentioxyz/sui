@@ -13,9 +13,10 @@ use anyhow::{Context, Error, Result};
 use cynic::{GraphQlResponse, Operation};
 use mysten_common::ZipDebugEqIteratorExt;
 use reqwest::header::USER_AGENT;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     collections::BTreeMap,
+    env,
     sync::{
         RwLock,
         atomic::{AtomicU64, Ordering},
@@ -243,12 +244,35 @@ impl SetupStore for DataStore {
     }
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+async fn retry_gql_query(attempt: u64, retries: u64, backoff_ms: u64) {
+    if attempt < retries {
+        tokio::time::sleep(Duration::from_millis(
+            backoff_ms.saturating_mul(attempt + 1),
+        ))
+        .await;
+    }
+}
+
 impl DataStore {
     pub fn new(node: Node, version: &str) -> Result<Self, Error> {
         debug!("Start stores creation");
         let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(3))
-            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(env_u64(
+                "SUI_DATA_STORE_GQL_CONNECT_TIMEOUT_SECS",
+                3,
+            )))
+            .timeout(Duration::from_secs(env_u64(
+                "SUI_DATA_STORE_GQL_TIMEOUT_SECS",
+                60,
+            )))
             .build()?;
         let url = node.gql_url();
         let rpc =
@@ -294,16 +318,39 @@ impl DataStore {
         T: serde::de::DeserializeOwned,
         V: serde::Serialize,
     {
-        client
-            .post(rpc.clone())
-            .header(USER_AGENT, format!("sui-data-store-v{}", version))
-            .json(&operation)
-            .send()
-            .await
-            .context("Failed to send GQL query")?
-            .json::<GraphQlResponse<T>>()
-            .await
-            .context("Failed to read response in GQL query")
+        let retries = env_u64("SUI_DATA_STORE_GQL_RETRIES", 4);
+        let backoff_ms = env_u64("SUI_DATA_STORE_GQL_RETRY_BACKOFF_MS", 250);
+        let user_agent = format!("sui-data-store-v{}", version);
+        let mut last_error = None;
+
+        for attempt in 0..=retries {
+            let response = match client
+                .post(rpc.clone())
+                .header(USER_AGENT, user_agent.clone())
+                .json(&operation)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    last_error = Some(Error::msg(format!("Failed to send GQL query: {err}")));
+                    retry_gql_query(attempt, retries, backoff_ms).await;
+                    continue;
+                }
+            };
+
+            match response.json::<GraphQlResponse<T>>().await {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    last_error = Some(Error::msg(format!(
+                        "Failed to read response in GQL query: {err}"
+                    )));
+                    retry_gql_query(attempt, retries, backoff_ms).await;
+                }
+            }
+        }
+
+        Err(last_error.expect("GraphQL retry loop must record an error"))
     }
 
     async fn transaction(

@@ -244,6 +244,16 @@ impl RuntimeLocation {
             Location::Global(id) => RuntimeLocation::Global(id),
         }
     }
+
+    /// Whether this location is rooted in a global (a value loaded by reference from a native or
+    /// passed in externally) rather than in a local or on the stack.
+    fn is_global_rooted(&self) -> bool {
+        match self {
+            RuntimeLocation::Global(_) => true,
+            RuntimeLocation::Indexed(parent, _) => parent.is_global_rooted(),
+            RuntimeLocation::Local(_, _) | RuntimeLocation::Stack(_) => false,
+        }
+    }
 }
 
 impl LocalType {
@@ -271,6 +281,127 @@ impl StackType {
             ref_type,
         }
     }
+}
+
+/// Whether a reference `TraceValue` carries a serialised snapshot of the root value it points
+/// into.
+///
+/// Building the snapshot converts the *entire* root runtime value into a `SerializableMoveValue`,
+/// and every consumer of the trace then parses it back. For a reference into a large object (a
+/// `&mut SuiSystemStateInner` is several MB as JSON) that cost recurs on every push, pop and local
+/// read of the reference and dominates the trace by orders of magnitude, so each emission site
+/// states what its consumers actually need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootSnapshot {
+    /// Serialise the root value. Required where the snapshot is the only record of a state
+    /// change: `Write` effects, and the tracer's own fallback snapshots of globals.
+    Keep,
+    /// Record the location only. `Push`, `Pop` and `Read` effects identify a reference by where
+    /// it points; the root value at that moment is never needed by trace consumers.
+    Elide,
+    /// Serialise the root value only for references rooted in a local. Used for frame parameters
+    /// and return values: a global root is recoverable from the `DataLoad` that introduced it plus
+    /// the `Write`s since, whereas a local root is not visible to consumers any other way.
+    KeepLocalRoots,
+}
+
+impl RootSnapshot {
+    fn keeps(self, root: &RuntimeLocation) -> bool {
+        match self {
+            RootSnapshot::Keep => true,
+            RootSnapshot::Elide => false,
+            RootSnapshot::KeepLocalRoots => !root.is_global_rooted(),
+        }
+    }
+}
+
+fn set_trace_value_snapshot(trace_value: &mut TraceValue, snapshot: SerializableMoveValue) {
+    match trace_value {
+        TraceValue::RuntimeValue { value } => *value = snapshot,
+        TraceValue::ImmRef {
+            snapshot: value, ..
+        }
+        | TraceValue::MutRef {
+            snapshot: value, ..
+        } => {
+            *value = Some(Box::new(snapshot));
+        }
+    }
+}
+
+fn child_value_mut(
+    value: &mut SerializableMoveValue,
+    index: usize,
+) -> Option<&mut SerializableMoveValue> {
+    match value {
+        SerializableMoveValue::Struct(value) => value.fields.get_mut(index).map(|(_, value)| value),
+        SerializableMoveValue::Variant(value) => {
+            value.fields.get_mut(index).map(|(_, value)| value)
+        }
+        SerializableMoveValue::Vector(values) => values.get_mut(index),
+        _ => None,
+    }
+}
+
+fn value_mut_at_trace_location<'a>(
+    root: &'a mut SerializableMoveValue,
+    location: &Location,
+) -> Option<&'a mut SerializableMoveValue> {
+    match location {
+        Location::Local(_, _) | Location::Global(_) => Some(root),
+        Location::Indexed(parent, index) => {
+            let parent = value_mut_at_trace_location(root, parent)?;
+            child_value_mut(parent, *index)
+        }
+    }
+}
+
+fn value_at_trace_location<'a>(
+    root: &'a SerializableMoveValue,
+    location: &Location,
+) -> Option<&'a SerializableMoveValue> {
+    match location {
+        Location::Local(_, _) | Location::Global(_) => Some(root),
+        Location::Indexed(parent, index) => {
+            let parent = value_at_trace_location(root, parent)?;
+            match parent {
+                SerializableMoveValue::Struct(value) => value.fields.get(*index).map(|(_, v)| v),
+                SerializableMoveValue::Variant(value) => value.fields.get(*index).map(|(_, v)| v),
+                SerializableMoveValue::Vector(values) => values.get(*index),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// The value a trace value denotes: the runtime value itself, or the value at the referenced
+/// location within the reference's root snapshot (`None` if that snapshot was elided).
+fn trace_value_location_snapshot(value: &TraceValue) -> Option<SerializableMoveValue> {
+    match value {
+        TraceValue::RuntimeValue { value } => Some(value.clone()),
+        TraceValue::ImmRef { location, snapshot } | TraceValue::MutRef { location, snapshot } => {
+            value_at_trace_location(snapshot.as_deref()?, location).cloned()
+        }
+    }
+}
+
+fn numeric_trace_value(value: &TraceValue) -> Option<u128> {
+    match trace_value_location_snapshot(value)? {
+        SerializableMoveValue::U8(value) => Some(value.into()),
+        SerializableMoveValue::U16(value) => Some(value.into()),
+        SerializableMoveValue::U32(value) => Some(value.into()),
+        SerializableMoveValue::U64(value) => Some(value.into()),
+        SerializableMoveValue::U128(value) => Some(value),
+        SerializableMoveValue::U256(value) => value.to_string().parse().ok(),
+        _ => None,
+    }
+}
+
+fn pop_effect_value(effects: &[EF], index: usize) -> Option<TraceValue> {
+    let EF::Pop(value) = effects.get(index)? else {
+        return None;
+    };
+    Some(value.clone())
 }
 
 impl VMTracer<'_> {
@@ -412,7 +543,7 @@ impl VMTracer<'_> {
 
         self.loaded_data.get_mut(idx)?.locations[location_index] =
             GlobalLocation::StackOffset(machine.operand_stack.value.len() - 1);
-        let v = self.resolve_stack_value(vtables, machine, 0)?;
+        let v = self.resolve_stack_value(vtables, machine, 0, RootSnapshot::Keep)?;
         let global = self.loaded_data.get_mut(idx)?;
         let Some(GlobalLocation::StackOffset(_)) = global.locations.get(location_index) else {
             // Better be what we just set it to earlier...
@@ -424,6 +555,76 @@ impl VMTracer<'_> {
         Some(())
     }
 
+    fn record_written_global_snapshot(
+        &mut self,
+        location: &RuntimeLocation,
+        snapshot: SerializableMoveValue,
+    ) -> Option<()> {
+        match location {
+            RuntimeLocation::Global(id) => {
+                // Keep the global's fallback snapshot current after a write through a
+                // reference rooted at it. Live `locations` (if any) take precedence when
+                // the value is read, so refreshing the snapshot is always safe.
+                let Some(global) = self.loaded_data.get_mut(id) else {
+                    return Some(());
+                };
+                set_trace_value_snapshot(&mut global.snapshot, snapshot);
+                Some(())
+            }
+            RuntimeLocation::Indexed(parent, _) => {
+                self.record_written_global_snapshot(parent, snapshot)
+            }
+            RuntimeLocation::Local(_, _) | RuntimeLocation::Stack(_) => Some(()),
+        }
+    }
+
+    /// The root value after a mutation through `reference`, for a `Write` effect.
+    ///
+    /// Post-effects run after the VM has executed the instruction. Wherever the root is live in
+    /// the VM -- a value local, or a global currently held by a local -- the VM already holds the
+    /// post-write value and it is read directly. A global whose only handle was the reference on
+    /// the operand stack has no live copy: its fallback snapshot in `loaded_data` is pre-write, so
+    /// `mutate` is applied to a copy of it at the referenced location. If the mutation cannot be
+    /// applied the fallback is used as is, matching the upstream tracer's best-effort behaviour.
+    ///
+    /// The result keeps the writing reference's own location and mutability, with the post-write
+    /// root snapshot attached: a `Write` always carries its root.
+    fn root_after_write(
+        &self,
+        vtables: &VMDispatchTables,
+        machine: &MachineState,
+        reference: &TraceValue,
+        root: &RuntimeLocation,
+        mutate: impl FnOnce(&mut SerializableMoveValue) -> Option<()>,
+    ) -> Option<TraceValue> {
+        let location = reference.location()?;
+        let snapshot = match self.stale_global_fallback(root) {
+            Some(fallback) => {
+                let mut snapshot = fallback.snapshot()?.clone();
+                let _ = value_mut_at_trace_location(&mut snapshot, location).and_then(mutate);
+                snapshot
+            }
+            None => self.root_location_snapshot(vtables, machine, root)?,
+        };
+        let mut root_value_after_write = reference.without_snapshot();
+        set_trace_value_snapshot(&mut root_value_after_write, snapshot);
+        Some(root_value_after_write)
+    }
+
+    /// The fallback snapshot of the global at the root of `location`, if that global is not
+    /// currently readable through any live location (see `GlobalValue`). `None` when the root is
+    /// a local or a live global, i.e. when the VM itself holds the current value.
+    fn stale_global_fallback(&self, location: &RuntimeLocation) -> Option<&TraceValue> {
+        match location {
+            RuntimeLocation::Global(id) => {
+                let global = self.loaded_data.get(id)?;
+                global.last_location().is_none().then_some(&global.snapshot)
+            }
+            RuntimeLocation::Indexed(parent, _) => self.stale_global_fallback(parent),
+            RuntimeLocation::Local(_, _) | RuntimeLocation::Stack(_) => None,
+        }
+    }
+
     /// Resolve a value on the stack to a TraceValue. References are fully rooted all the way back
     /// to their location in a local.
     fn resolve_stack_value(
@@ -431,6 +632,7 @@ impl VMTracer<'_> {
         vtables: &VMDispatchTables,
         machine: &MachineState,
         stack_idx: usize,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         if stack_idx >= machine.operand_stack.len() {
             return None;
@@ -440,6 +642,7 @@ impl VMTracer<'_> {
             vtables,
             machine,
             &RuntimeLocation::Stack(offset - stack_idx),
+            root_snapshot,
         )
     }
 
@@ -450,34 +653,42 @@ impl VMTracer<'_> {
         vtables: &VMDispatchTables,
         machine: &MachineState,
         local_index: usize,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         self.resolve_location(
             vtables,
             machine,
             &RuntimeLocation::Local(self.current_frame_identifier()?, local_index),
+            root_snapshot,
         )
     }
 
-    /// Shared utility function that creates a TraceValue from a runtime location along with
-    /// grabbing the snapshot of the value.
+    /// Shared utility function that creates a TraceValue from a runtime location. A runtime value
+    /// always carries its value; a reference carries the snapshot of its root only when
+    /// `root_snapshot` asks for it, since producing it serialises the whole root.
     fn make_trace_value(
         &self,
         vtables: &VMDispatchTables,
         machine: &MachineState,
         location: RuntimeLocation,
         ref_info: Option<Mutability>,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
-        let value = self.root_location_snapshot(vtables, machine, &location)?;
-        Some(match ref_info {
-            Some(Mutability::Imm) => TraceValue::ImmRef {
-                location: location.as_trace_location()?,
-                snapshot: Box::new(value),
-            },
-            Some(Mutability::Mut) => TraceValue::MutRef {
-                location: location.as_trace_location()?,
-                snapshot: Box::new(value),
-            },
-            None => TraceValue::RuntimeValue { value },
+        let Some(ref_type) = ref_info else {
+            let value = self.root_location_snapshot(vtables, machine, &location)?;
+            return Some(TraceValue::RuntimeValue { value });
+        };
+        let snapshot = if root_snapshot.keeps(&location) {
+            Some(Box::new(
+                self.root_location_snapshot(vtables, machine, &location)?,
+            ))
+        } else {
+            None
+        };
+        let location = location.as_trace_location()?;
+        Some(match ref_type {
+            Mutability::Imm => TraceValue::ImmRef { location, snapshot },
+            Mutability::Mut => TraceValue::MutRef { location, snapshot },
         })
     }
 
@@ -518,11 +729,20 @@ impl VMTracer<'_> {
         vtables: &VMDispatchTables,
         machine: &MachineState,
         id: TraceIndex,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         let global = self.loaded_data.get(&id)?;
         match global.last_location() {
-            Some(location) => self.resolve_location(vtables, machine, &location.runtime_location()),
-            None => Some(global.snapshot.clone()),
+            Some(location) => self.resolve_location(
+                vtables,
+                machine,
+                &location.runtime_location(),
+                root_snapshot,
+            ),
+            None if root_snapshot.keeps(&RuntimeLocation::Global(id)) => {
+                Some(global.snapshot.clone())
+            }
+            None => Some(global.snapshot.without_snapshot()),
         }
     }
 
@@ -537,7 +757,7 @@ impl VMTracer<'_> {
             Some(location) => {
                 self.root_location_snapshot(vtables, machine, &location.runtime_location())
             }
-            None => Some(global.snapshot.snapshot().clone()),
+            None => Some(global.snapshot.snapshot()?.clone()),
         }
     }
 
@@ -548,6 +768,7 @@ impl VMTracer<'_> {
         vtables: &VMDispatchTables,
         machine: &MachineState,
         loc: &RuntimeLocation,
+        root_snapshot: RootSnapshot,
     ) -> Option<TraceValue> {
         match loc {
             RuntimeLocation::Stack(sidx) => {
@@ -558,7 +779,7 @@ impl VMTracer<'_> {
                     .as_ref()
                     .map(|(_, l)| l.clone())
                     .unwrap_or_else(|| loc.clone());
-                self.make_trace_value(vtables, machine, location, ref_ty)
+                self.make_trace_value(vtables, machine, location, ref_ty, root_snapshot)
             }
             RuntimeLocation::Local(fidx, lidx) => {
                 let ty = &self.active_frames.get(fidx)?.locals_types.get(*lidx)?;
@@ -575,12 +796,14 @@ impl VMTracer<'_> {
                         return None;
                     }
                 };
-                self.make_trace_value(vtables, machine, location, ref_ty)
+                self.make_trace_value(vtables, machine, location, ref_ty, root_snapshot)
             }
             RuntimeLocation::Indexed(location, _) => {
-                self.resolve_location(vtables, machine, location)
+                self.resolve_location(vtables, machine, location, root_snapshot)
             }
-            RuntimeLocation::Global(id) => self.resolve_global_location(vtables, machine, *id),
+            RuntimeLocation::Global(id) => {
+                self.resolve_global_location(vtables, machine, *id, root_snapshot)
+            }
         }
     }
 
@@ -669,11 +892,11 @@ impl VMTracer<'_> {
         let trace_value = match ref_type {
             Mutability::Imm => TraceValue::ImmRef {
                 location: location.as_trace_location()?,
-                snapshot: Box::new(value),
+                snapshot: Some(Box::new(value)),
             },
             Mutability::Mut => TraceValue::MutRef {
                 location: location.as_trace_location()?,
-                snapshot: Box::new(value),
+                snapshot: Some(Box::new(value)),
             },
         };
         Some((id, trace_value))
@@ -746,9 +969,11 @@ impl VMTracer<'_> {
                 match ref_type {
                     Some(ref_type) => {
                         let (id, trace_value) = self.emit_data_load(move_value, &ref_type)?;
-                        self.loaded_data
-                            .insert(id, GlobalValue::new(trace_value.clone()));
-                        Some((trace_value, Some(id)))
+                        // The parameter refers to the global just loaded; consumers read its
+                        // value from the `DataLoad`, so the frame records the location only.
+                        let parameter = trace_value.without_snapshot();
+                        self.loaded_data.insert(id, GlobalValue::new(trace_value));
+                        Some((parameter, Some(id)))
                     }
                     None => Some((TraceValue::RuntimeValue { value: move_value }, None)),
                 }
@@ -837,9 +1062,10 @@ impl VMTracer<'_> {
                 match ref_type {
                     Some(ref_type) => {
                         let (id, trace_value) = self.emit_data_load(move_value, &ref_type)?;
-                        self.loaded_data
-                            .insert(id, GlobalValue::new(trace_value.clone()));
-                        Some(trace_value)
+                        // As for initial-frame parameters: the `DataLoad` carries the value.
+                        let returned = trace_value.without_snapshot();
+                        self.loaded_data.insert(id, GlobalValue::new(trace_value));
+                        Some(returned)
                     }
                     None => Some(TraceValue::RuntimeValue { value: move_value }),
                 }
@@ -871,7 +1097,14 @@ impl VMTracer<'_> {
             .rev()
             .enumerate()
             .map(|(local_idx, stack_idx)| {
-                let val = self.resolve_stack_value(vtables, machine, stack_idx)?;
+                // Reference parameters rooted in a global are recoverable by consumers from the
+                // `DataLoad`/`Write` events; only local roots need their snapshot here.
+                let val = self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    stack_idx,
+                    RootSnapshot::KeepLocalRoots,
+                )?;
                 // NB: it is important for us to resolve the value _before_ we register that any
                 // global is stored there.
                 self.store_global(machine, new_frame_idx, stack_idx, local_idx)?;
@@ -971,14 +1204,14 @@ impl VMTracer<'_> {
 
         let return_values = (0..function.return_type_count())
             .rev()
-            .map(|i| self.resolve_stack_value(vtables, machine, i))
+            .map(|i| self.resolve_stack_value(vtables, machine, i, RootSnapshot::KeepLocalRoots))
             .collect::<Option<Vec<_>>>()?;
 
         // Note that when a native function frame closes the values returned by the native function
         // are all pushed on the operand stack.
         if function.is_native() {
             for val in &return_values {
-                self.trace.effect(EF::Push(val.clone()));
+                self.trace.effect(EF::Push(val.without_snapshot()));
             }
         }
 
@@ -1031,7 +1264,7 @@ impl VMTracer<'_> {
                 // VecImmBorrow/VecMutBorrow: capture just the u64 index (trivially cheap) since
                 // end_instruction_no_effects_impl needs it for the type_stack Indexed location.
                 B::VecImmBorrow(_) | B::VecMutBorrow(_) => {
-                    let v = self.resolve_stack_value(vtables, machine, 0)?;
+                    let v = self.resolve_stack_value(vtables, machine, 0, RootSnapshot::Elide)?;
                     self.register_effect(EF::Pop(v));
                     return Some(());
                 }
@@ -1060,7 +1293,7 @@ impl VMTracer<'_> {
 
         let mut popn = |n: usize| {
             for i in 0..n {
-                emit_pre_effect!(i => EF::Pop(self.resolve_stack_value(vtables, machine, i)?));
+                emit_pre_effect!(i => EF::Pop(self.resolve_stack_value(vtables, machine, i, RootSnapshot::Elide)?));
             }
             Some(())
         };
@@ -1134,7 +1367,7 @@ impl VMTracer<'_> {
             B::VecPack(_, n) => popn(*n as usize)?,
             i @ (B::MoveLoc(l) | B::CopyLoc(l)) => {
                 emit_pre_effect! {
-                    let v = self.resolve_local(vtables, machine, *l as usize)?;
+                    let v = self.resolve_local(vtables, machine, *l as usize, RootSnapshot::Elide)?;
                     EF::Read(Read {
                         location: Location::Local(self.current_frame_identifier()?, *l as usize),
                         root_value_read: v.clone(),
@@ -1143,7 +1376,12 @@ impl VMTracer<'_> {
                 }
             }
             B::StLoc(lidx) => {
-                emit_pre_effect!(EF::Pop(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_pre_effect!(EF::Pop(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let ty = self.type_stack.last()?.clone();
                 let frame_identifier = self.current_frame_identifier()?;
                 self.remove_global_locations_for_local(frame_identifier, *lidx as usize);
@@ -1152,7 +1390,8 @@ impl VMTracer<'_> {
             }
             B::ImmBorrowLoc(l_idx) | B::MutBorrowLoc(l_idx) => {
                 emit_pre_effect! {
-                    let val = self.resolve_local(vtables, machine, *l_idx as usize)?;
+                    let val =
+                        self.resolve_local(vtables, machine, *l_idx as usize, RootSnapshot::Elide)?;
                     let location = Location::Local(self.current_frame_identifier()?, *l_idx as usize);
                     EF::Read(Read {
                         location,
@@ -1180,12 +1419,18 @@ impl VMTracer<'_> {
                 popn(field_count)?;
             }
             B::ReadRef => {
-                let ref_value = self.resolve_stack_value(vtables, machine, 0)?;
+                let ref_value =
+                    self.resolve_stack_value(vtables, machine, 0, RootSnapshot::Elide)?;
                 let location = ref_value.location()?.clone();
                 emit_pre_effect!(EF::Pop(ref_value));
                 emit_pre_effect! {
                     let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
-                    let value = self.resolve_location(vtables, machine, &runtime_location)?;
+                    let value = self.resolve_location(
+                        vtables,
+                        machine,
+                        &runtime_location,
+                        RootSnapshot::Elide,
+                    )?;
                     EF::Read(Read {
                         location,
                         root_value_read: value.clone(),
@@ -1286,7 +1531,12 @@ impl VMTracer<'_> {
                     layout,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1301,7 +1551,12 @@ impl VMTracer<'_> {
                 if matches!(i, B::MoveLoc(_)) {
                     self.invalidate_local(vtables, machine, *l as usize)?;
                 }
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1321,7 +1576,12 @@ impl VMTracer<'_> {
                     layout,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1330,10 +1590,12 @@ impl VMTracer<'_> {
                 let ty = self.type_stack.pop()?;
                 self.insert_local(*lidx as usize, ty.clone())?;
                 emit_effect! {
-                    let v = self.resolve_local(vtables, machine, *lidx as usize)?;
+                    // Storing a reference into a local aliases a root without changing it, so
+                    // the snapshot is elided; a stored value is a runtime value and kept as is.
+                    let v = self.resolve_local(vtables, machine, *lidx as usize, RootSnapshot::Elide)?;
                     EF::Write(Write {
                         location: Location::Local(self.current_frame_identifier()?, *lidx as usize),
-                        root_value_after_write: v.clone(),
+                        root_value_after_write: v,
                     })
                 };
                 let effects = get_effects!();
@@ -1353,7 +1615,12 @@ impl VMTracer<'_> {
                 self.type_stack.pop()?;
                 let a_ty = self.type_stack.pop()?;
                 self.type_stack.push(a_ty);
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1365,7 +1632,12 @@ impl VMTracer<'_> {
                     layout: AnnotatedTypeLayout::Bool,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1385,7 +1657,12 @@ impl VMTracer<'_> {
                     layout: ty,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1408,7 +1685,12 @@ impl VMTracer<'_> {
                     self.report_error(&format!("Expected struct, got {:#?}", struct_type));
                     return None;
                 };
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace.instruction(
                     instruction,
@@ -1431,7 +1713,7 @@ impl VMTracer<'_> {
                     });
                 }
                 for (j, i) in (0..s.fields.len()).rev().enumerate() {
-                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i)?));
+                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i, RootSnapshot::Elide)?));
                 }
                 let effects = get_effects!();
                 self.trace
@@ -1444,7 +1726,12 @@ impl VMTracer<'_> {
                     layout: AnnotatedTypeLayout::Bool,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1456,7 +1743,12 @@ impl VMTracer<'_> {
                     layout: AnnotatedTypeLayout::Bool,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1464,7 +1756,12 @@ impl VMTracer<'_> {
             B::Not => {
                 let a_ty = self.type_stack.pop()?;
                 self.type_stack.push(a_ty);
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1486,7 +1783,12 @@ impl VMTracer<'_> {
                     layout: ref_ty.layout.clone(),
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1505,7 +1807,12 @@ impl VMTracer<'_> {
                         RuntimeLocation::Local(self.current_frame_identifier()?, *l_idx as usize),
                     )),
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1513,16 +1820,27 @@ impl VMTracer<'_> {
             B::WriteRef => {
                 let reference_ty = self.type_stack.pop()?;
                 let _value_ty = self.type_stack.pop()?;
+                let mut written_root = None;
                 emit_effect! {
-                    let location = reference_ty.ref_type.as_ref()?.1.clone();
+                    let root = reference_ty.ref_type.as_ref()?.1.clone();
+                    let reference = pop_effect_value(&self.effects, 0)?;
+                    let written =
+                        trace_value_location_snapshot(&pop_effect_value(&self.effects, 1)?)?;
                     let root_value_after_write =
-                        self.resolve_location(vtables, machine, &location)?;
+                        self.root_after_write(vtables, machine, &reference, &root, |slot| {
+                            *slot = written;
+                            Some(())
+                        })?;
+                    written_root = Some((root, root_value_after_write.snapshot()?.clone()));
                     EF::Write(Write {
-                        location: location.as_trace_location()?,
+                        location: reference.location()?.clone(),
                         root_value_after_write,
                     })
                 };
                 let effects = get_effects!();
+                if let Some((root, snapshot)) = written_root {
+                    self.record_written_global_snapshot(&root, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1530,7 +1848,12 @@ impl VMTracer<'_> {
                 let mut reference_ty = self.type_stack.pop()?;
                 reference_ty.ref_type.as_mut()?.0 = Mutability::Imm;
                 self.type_stack.push(reference_ty);
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1555,7 +1878,12 @@ impl VMTracer<'_> {
                     layout: field_layout,
                     ref_type: Some((ref_type, field_location)),
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1581,7 +1909,12 @@ impl VMTracer<'_> {
                     ref_type: Some((ref_type, field_location)),
                 });
                 let ty_args = slayout.type_.type_params.clone();
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, ty_args, effects, *remaining_gas, pc);
@@ -1597,7 +1930,12 @@ impl VMTracer<'_> {
                     layout: ty,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1635,7 +1973,12 @@ impl VMTracer<'_> {
                     layout: (*ty).clone(),
                     ref_type: Some((ref_type, location)),
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1646,7 +1989,12 @@ impl VMTracer<'_> {
                     layout: AnnotatedTypeLayout::U64,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1654,22 +2002,31 @@ impl VMTracer<'_> {
             B::VecPushBack(_) => {
                 self.type_stack.pop()?;
                 self.type_stack.pop()?;
+                let mut written_root = None;
                 emit_effect! {
-                    let EF::Pop(reference_val) = &self.effects[1] else {
-                        self.report_error(
-                            "Expected a reference value for the vector in VecPushBack",
-                        );
-                        return None;
-                    };
-                    let location = reference_val.location()?.clone();
-                    let runtime_location = RuntimeLocation::as_runtime_location(location.clone());
-                    let snap = self.resolve_location(vtables, machine, &runtime_location)?;
+                    let pushed =
+                        trace_value_location_snapshot(&pop_effect_value(&self.effects, 0)?)?;
+                    let reference = pop_effect_value(&self.effects, 1)?;
+                    let location = reference.location()?.clone();
+                    let root = RuntimeLocation::as_runtime_location(location.clone());
+                    let root_value_after_write =
+                        self.root_after_write(vtables, machine, &reference, &root, |slot| {
+                            let SerializableMoveValue::Vector(values) = slot else {
+                                return None;
+                            };
+                            values.push(pushed);
+                            Some(())
+                        })?;
+                    written_root = Some((root, root_value_after_write.snapshot()?.clone()));
                     EF::Write(Write {
                         location,
-                        root_value_after_write: snap,
+                        root_value_after_write,
                     })
                 };
                 let effects = get_effects!();
+                if let Some((root, snapshot)) = written_root {
+                    self.record_written_global_snapshot(&root, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1683,8 +2040,51 @@ impl VMTracer<'_> {
                     layout: (*ty).clone(),
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
+                // Sentio: also record the vector's post-pop state as a Write effect so the
+                // trace shows the mutation, mirroring VecPushBack. Position 2 in the
+                // post-effect order (after the Push). The popped reference is still the first
+                // pre-effect (`self.effects[0]`); the Push was appended after it.
+                let mut written_root = None;
+                if instruction_filter.is_some_and(|f| f(2)) {
+                    if let Some(reference) = pop_effect_value(&self.effects, 0) {
+                        if let Some(location) = reference.location().cloned() {
+                            let root = RuntimeLocation::as_runtime_location(location.clone());
+                            let root_value_after_write = self.root_after_write(
+                                vtables,
+                                machine,
+                                &reference,
+                                &root,
+                                |slot| {
+                                    let SerializableMoveValue::Vector(values) = slot else {
+                                        return None;
+                                    };
+                                    values.pop()?;
+                                    Some(())
+                                },
+                            );
+                            if let Some(root_value_after_write) = root_value_after_write {
+                                written_root = root_value_after_write
+                                    .snapshot()
+                                    .cloned()
+                                    .map(|snapshot| (root, snapshot));
+                                self.register_effect(EF::Write(Write {
+                                    location,
+                                    root_value_after_write,
+                                }));
+                            }
+                        }
+                    }
+                }
                 let effects = get_effects!();
+                if let Some((root, snapshot)) = written_root {
+                    self.record_written_global_snapshot(&root, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1701,7 +2101,7 @@ impl VMTracer<'_> {
                     });
                 }
                 for (j, i) in (0..*n as usize).rev().enumerate() {
-                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i)?));
+                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i, RootSnapshot::Elide)?));
                 }
                 let effects = get_effects!();
                 self.trace
@@ -1711,15 +2111,34 @@ impl VMTracer<'_> {
                 self.type_stack.pop()?;
                 self.type_stack.pop()?;
                 let v_ref = self.type_stack.pop()?;
+                let mut written_root = None;
                 emit_effect! {
-                    let location = v_ref.ref_type.as_ref()?.1.clone();
-                    let snap = self.resolve_location(vtables, machine, &location)?;
+                    let right = numeric_trace_value(&pop_effect_value(&self.effects, 0)?)?;
+                    let left = numeric_trace_value(&pop_effect_value(&self.effects, 1)?)?;
+                    let (left, right) = (usize::try_from(left).ok()?, usize::try_from(right).ok()?);
+                    let reference = pop_effect_value(&self.effects, 2)?;
+                    let root = v_ref.ref_type.as_ref()?.1.clone();
+                    let root_value_after_write =
+                        self.root_after_write(vtables, machine, &reference, &root, |slot| {
+                            let SerializableMoveValue::Vector(values) = slot else {
+                                return None;
+                            };
+                            if left >= values.len() || right >= values.len() {
+                                return None;
+                            }
+                            values.swap(left, right);
+                            Some(())
+                        })?;
+                    written_root = Some((root, root_value_after_write.snapshot()?.clone()));
                     EF::Write(Write {
-                        location: location.as_trace_location()?,
-                        root_value_after_write: snap,
+                        location: reference.location()?.clone(),
+                        root_value_after_write,
                     })
                 };
                 let effects = get_effects!();
+                if let Some((root, snapshot)) = written_root {
+                    self.record_written_global_snapshot(&root, snapshot)?;
+                }
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
             }
@@ -1734,7 +2153,12 @@ impl VMTracer<'_> {
                     layout: ty,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1756,7 +2180,12 @@ impl VMTracer<'_> {
                     layout: ty,
                     ref_type: None,
                 });
-                emit_effect!(EF::Push(self.resolve_stack_value(vtables, machine, 0)?));
+                emit_effect!(EF::Push(self.resolve_stack_value(
+                    vtables,
+                    machine,
+                    0,
+                    RootSnapshot::Elide
+                )?));
                 let effects = get_effects!();
                 self.trace
                     .instruction(instruction, vec![], effects, *remaining_gas, pc);
@@ -1782,7 +2211,7 @@ impl VMTracer<'_> {
                     });
                 }
                 for (j, i) in (0..field_count).rev().enumerate() {
-                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i)?));
+                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i, RootSnapshot::Elide)?));
                 }
                 let effects = get_effects!();
                 self.trace
@@ -1826,7 +2255,7 @@ impl VMTracer<'_> {
                     });
                 }
                 for (j, i) in (0..field_count).rev().enumerate() {
-                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i)?));
+                    emit_effect!(j => EF::Push(self.resolve_stack_value(vtables, machine, i, RootSnapshot::Elide)?));
                 }
                 let effects = get_effects!();
                 self.trace
