@@ -79,6 +79,13 @@ pub struct Write {
 /// A TraceValue is a value in the standard MoveValue domain + references.
 /// References hold their own snapshot of the root value they point to, along with the rooted path to
 /// the value that they reference within that snapshot.
+///
+/// The root snapshot is optional. Producing it means serialising the *entire* root value on every
+/// stack push/pop of the reference, which for a reference into a multi-megabyte object turns a
+/// short transaction into a multi-gigabyte trace. The VM tracer therefore only attaches the
+/// snapshot where a consumer cannot recover the root from other events (`DataLoad`, `Write`, and
+/// frame parameters/returns rooted in a local) and leaves it out elsewhere; an elided snapshot is
+/// omitted from the serialised JSON entirely.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TraceValue {
     RuntimeValue {
@@ -86,13 +93,15 @@ pub enum TraceValue {
     },
     ImmRef {
         location: Location,
-        // Snapshot of the root value.
-        snapshot: Box<SerializableMoveValue>,
+        // Snapshot of the root value, if it was captured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<SerializableMoveValue>>,
     },
     MutRef {
         location: Location,
-        // Snapshot of the root value.
-        snapshot: Box<SerializableMoveValue>,
+        // Snapshot of the root value, if it was captured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<SerializableMoveValue>>,
     },
 }
 
@@ -208,10 +217,33 @@ pub struct MoveTraceBuilder {
 }
 
 impl TraceValue {
-    pub fn snapshot(&self) -> &SerializableMoveValue {
+    /// The root value this trace value denotes: the value itself for a `RuntimeValue`, or the
+    /// snapshot of the referenced root for a reference. `None` for a reference whose root snapshot
+    /// was elided by the producer.
+    pub fn snapshot(&self) -> Option<&SerializableMoveValue> {
         match self {
-            TraceValue::ImmRef { snapshot, .. } | TraceValue::MutRef { snapshot, .. } => snapshot,
-            TraceValue::RuntimeValue { value } => value,
+            TraceValue::ImmRef { snapshot, .. } | TraceValue::MutRef { snapshot, .. } => {
+                snapshot.as_deref()
+            }
+            TraceValue::RuntimeValue { value } => Some(value),
+        }
+    }
+
+    /// A copy of this value with any reference root snapshot dropped, leaving only the location.
+    /// Runtime values are copied unchanged.
+    pub fn without_snapshot(&self) -> Self {
+        match self {
+            TraceValue::ImmRef { location, .. } => TraceValue::ImmRef {
+                location: location.clone(),
+                snapshot: None,
+            },
+            TraceValue::MutRef { location, .. } => TraceValue::MutRef {
+                location: location.clone(),
+                snapshot: None,
+            },
+            TraceValue::RuntimeValue { value } => TraceValue::RuntimeValue {
+                value: value.clone(),
+            },
         }
     }
 
@@ -438,12 +470,14 @@ impl Display for TraceValue {
             TraceValue::RuntimeValue { value } => {
                 write!(f, "{:#}", value)
             }
-            TraceValue::ImmRef { location, snapshot } => {
-                write!(f, "&{} {:#}", location, snapshot)
-            }
-            TraceValue::MutRef { location, snapshot } => {
-                write!(f, "&mut {} {:#}", location, snapshot)
-            }
+            TraceValue::ImmRef { location, snapshot } => match snapshot {
+                Some(snapshot) => write!(f, "&{} {:#}", location, snapshot),
+                None => write!(f, "&{}", location),
+            },
+            TraceValue::MutRef { location, snapshot } => match snapshot {
+                Some(snapshot) => write!(f, "&mut {} {:#}", location, snapshot),
+                None => write!(f, "&mut {}", location),
+            },
         }
     }
 }
@@ -625,6 +659,44 @@ fn large_numeric_values_in_trace() {
             _ => panic!("expected RuntimeValue, got: {:?}", value),
         }
     }
+}
+
+// A reference whose root snapshot was elided serialises without a `snapshot` field and reads back
+// as `None`; one with a snapshot round-trips unchanged.
+#[test]
+fn reference_root_snapshot_is_optional() {
+    let elided = TraceValue::MutRef {
+        location: Location::Indexed(Box::new(Location::Global(7)), 2),
+        snapshot: None,
+    };
+    let kept = TraceValue::ImmRef {
+        location: Location::Local(3, 1),
+        snapshot: Some(Box::new(SerializableMoveValue::U64(42))),
+    };
+
+    let elided_json = serde_json::to_string(&elided).unwrap();
+    assert!(
+        !elided_json.contains("snapshot"),
+        "elided snapshot must be omitted: {elided_json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<TraceValue>(&elided_json).unwrap(),
+        elided
+    );
+    assert_eq!(elided.snapshot(), None);
+
+    let kept_json = serde_json::to_string(&kept).unwrap();
+    assert!(kept_json.contains("snapshot"));
+    assert_eq!(
+        serde_json::from_str::<TraceValue>(&kept_json).unwrap(),
+        kept
+    );
+    assert_eq!(kept.snapshot(), Some(&SerializableMoveValue::U64(42)));
+    assert_eq!(kept.without_snapshot().snapshot(), None);
+    assert_eq!(
+        kept.without_snapshot().location(),
+        Some(&Location::Local(3, 1))
+    );
 }
 
 // `Writer::push` -- the generic hook tracers use to add external events -- should handle an integer

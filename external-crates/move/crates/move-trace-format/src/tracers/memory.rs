@@ -101,12 +101,16 @@ impl TraceState {
                         frame.0.insert(*idx, value_written.clone());
                     }
                     Location::Indexed(location, _idx) => {
-                        let val = self.get_mut_location(location);
-                        *val = value_written.clone().snapshot().clone();
+                        if let Some(snapshot) = value_written.snapshot() {
+                            let val = self.get_mut_location(location);
+                            *val = snapshot.clone();
+                        }
                     }
                     Location::Global(id) => {
-                        let val = self.loaded_state.get_mut(id).unwrap();
-                        *val = value_written.snapshot().clone();
+                        if let Some(snapshot) = value_written.snapshot() {
+                            let val = self.loaded_state.get_mut(id).unwrap();
+                            *val = snapshot.clone();
+                        }
                     }
                 },
                 Effect::DataLoad(DataLoad {

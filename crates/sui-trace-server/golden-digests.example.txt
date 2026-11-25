@@ -1,0 +1,104 @@
+# Candidate mainnet digests for sentio call trace golden comparisons.
+#
+# This file is intentionally a starting set, not a completed acceptance list.
+# Keep one digest per line. Comments and blank lines are ignored by
+# scripts/compare_call_trace.py.
+#
+# Important: the sentio-260210 baseline supports protocol versions up to 111.
+# Use protocol <=111 historical digests for strict old-vs-new golden tests.
+# The old baseline also needs an archive/full-history JSON-RPC endpoint; the
+# public mainnet fullnode can return ObjectVersionNotFound for these old object
+# versions.
+
+# Protocol 111 / executedEpoch 1049 candidates.
+# Collected from checkpoints 248414600..248753200 with:
+#   collect_golden_candidates.py --epoch 1049 --max-checkpoints 120
+
+# Simple MoveCall.
+2pgjjduPkw1B7b34KqwDeSuCdej9XSCgka6pzZMjWEHj
+C2szS2WkUGeaht6sdcy1Nr9ZTBSFw4JwPAojtkcmQpej
+E9ZFeq9L2oCW36eaXcdHoZDGzDYzuAGCRMjxUopEngQ6
+
+# Multi MoveCall and generic type args.
+ADWn1eLak5DndiAr12PNY9mYjchALvzwfwhDS61cE8pj
+9aJTH2v9HpU8JufsniTDFZBRd9XcuCGAneQYLycuMCib
+BpDRWWrP4JM5LzkGbx7YBjn6Wo2Jn1m4GvVisCYCT5yL
+
+# Sui framework/native call candidates.
+CWuBtNaquFCQvTqSQNx79vz6hkZMR627pP1GnE9Dg9Ap
+CexALS6vFCzP4LGL5J719gLuzVJNsCtgaAwB4WBhVKzL
+BEVV332bxFqj4UAPgymD9gE5RUCWJ4F6FNbBhSunMdZP
+
+# TransferObjects / SplitCoins / MergeCoins / multi-command PTB candidates.
+DmsyTa7ofMgrKjc1KzVc3zzZy5oG2UJjRcR1gRUbbHjq
+
+# Pure non-Move PTB risk candidates. Upstream replay can return no trace
+# artifact for these; old static PTB tracing may still return transfer_objects.
+43sn7pKwwuScNhFehYaaDf8v5AvrKaD3j1HgwtmXAmtF
+4xqE9pgMYPKyKekYQdexE3weMiAZ57tf3MNcrkb4jMb2
+
+# Abort/error candidates.
+3zC1bpHicPuQuu7KWBpFvbqzJmUmfF7GrVdU3Tg2Q7HB
+BMHxRfSnWe7YNaL4S4Vnwr4wdzgtqVhT35igV6zEqdRW
+c2hkeqfjNcpZEqWGREYgqUJHFVYBbUK3gXzqZB54RnC
+
+# Additional known protocol 111 candidates.
+# Checkpoint 248753200, multi MoveCall.
+4BPM5UFxFzjySpGnLnFqYfcsKVjrrz21rrpC664wxvHA
+
+# Checkpoint 248753200, MoveCall plus MergeCoins and TransferObjects.
+7hM7eZA3tA5gGoY3eVwnmRpm8uoSDZ2YtiZtYZyod2Nv
+
+# Checkpoint 248753200, additional MoveCall candidates.
+CCEjGcumLp28NjHzsG5MKRkKR5S81JGqv5TPMP9DG1jW
+xewaZo3V4pezLL8voFuMzm7gEdgvQNnSfdXfhhUDH4R
+9DLoGHAKXdqyFVgF5QWFEpkvcmjE8xjGb9dhn3dkJYsq
+J6fs4Cq4eLRSVvL29HPLmDzuf9hds1rR8a7NqMRq6nNB
+GhnYPyo9aVZFPVhHbRUbrZqnvAjRBWYiLW8skjpi8JrA
+
+# Checkpoint 248753000, MoveCall.
+EjvQrLCT86i4ZEd13Uuph18Z6kiSQ9cQYPxBJriuHDjz
+
+# Additional protocol 111 cases from a wider epoch 1049 scan. These have fresh
+# old-vs-new strict comparison coverage against the migrated tracer.
+
+# Pure TransferObjects-only PTBs.
+BF7j3XyBLtPUJSYgnuRg2oaKv7UsBSPwdNRrQfJgjYRN
+DByYy4nm5z3umeQv7b4XiDsKmp9oyRer8poH7AtmdXxT
+
+# Pure non-Move SplitCoins/MergeCoins/TransferObjects PTBs.
+J1oppuaD6PaUPvYJ9n1RLTiRyeCvwFTnxDYuXJBbZEaW
+Ge3aHJNVVrU2WRNhMPJsU1HpykLPn2ALqZ7PQgFCda8n
+BJitbfLeqqXYqhmxeNCXtnjypj8oYewivAqRCtfsF6fU
+
+# MakeMoveVec / result-derived coin vector compatibility.
+8EWu19Jpw6Nx6yWRtrsmgDvCxTMs8GoKyTX6so8dSNN2
+3RPg11YjKWzAnThfzK1EGMy42DRE1NiAAMhaUxR4toQj
+6RcB1KtH53APhrQ4N3qCrgS5f5eBTok4kRL9tFBaQDGp
+
+# TransferObjects with Result/NestedResult and non-coin object transfer values.
+97HZZhfBtNAusibidp73ehge5isF6nvojKEffYXU5CUM
+p4TcLCUuBnmhbXnJ36hhJwYtVkfA64tk8DyUsqNZQEN
+5v2tE1yPRMM3SVUvB4rPQhYKKzTbjY64RZfWa1XwLhvq
+9236D5pCXyAb4MD4EhR6jg9szu28tpRwGU6jo6jGTj7o
+
+# Complex PTB failure traces.
+Dn2zoWM1dhY228PowGaqgeV9JneGzoC6UhobF4ZVHQFG
+37XgVcXr2F14swkW8TGRHxifKkmm9rB9Us6xGNpxTAQN
+
+# Heavy router/cell/skip_list trace; use a longer compare timeout.
+9GA8ZhLMqYntSQMpdcqdyeEDdWjcGm2XNTBSg98dU5w5
+
+# Current protocol smoke candidates for the migrated server only. Do not enable
+# these for old-vs-new golden tests against sentio-260210; that baseline panics
+# on protocol versions newer than 111.
+# 8gQrigZ4W27Ax8au4xFEbtVae5juoVGuE8b2fWwv87NN
+# BKN3UgCJJ7qdu8ciRKaQKQvGyDBmatsNpTptWxvR1dDY
+# 2YFMu19F7nRUzJ8QAR3fdWuSg8G4AWmCuuBznFLEyyQ7
+# B16JzJjgCReEdtH1XYZqxKaj4j26nC61w7R1H2jNnxbZ
+# DhMCVn9RX5godqsFTj7DSDbtAeVreTcGvaTLXaoJK3hK
+# CAJQpjcZHfCyS9EiT7PNSWYESVW3R6rqRUuBcfYfbvAM
+# FVe2ChJsmZjPpyqnjauwXTbksW1r9fdwubuYVhmgdeX2
+
+# TODO: add Publish/init. The 248414600..248753200 epoch 1049 scan found none.
+# TODO: add Upgrade. The 248414600..248753200 epoch 1049 scan found none.
